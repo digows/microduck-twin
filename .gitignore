@@ -1,0 +1,8 @@
+# Upstream checkouts and build output live under the state directory, never here.
+/state/
+/.cache/
+target/
+__pycache__/
+*.py[oc]
+.venv/
+.DS_Store

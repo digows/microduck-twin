@@ -1,0 +1,123 @@
+#!/bin/sh
+# aplay(1), for a duck whose codec is a simulation.
+#
+# `robotd` and the `sounds` CLI make every sound by forking `aplay -D <device>`: the voice
+# bank as a wav path, and the theremin, the ride and the chorale as raw S16_LE on stdin.
+# That is the whole playback seam — there is no in-process ALSA binding to replace — so a
+# machine with no codec gains a voice by putting this directory on PATH ahead of the rest.
+#
+# On macOS neither `aplay` nor `arecord` exists, so the daemon's sound path fails at the
+# fork. That failure is logged at debug and skipped by design, which is why a silent duck
+# looks like a working one: `robotctl quack` answers with a duck and nothing is heard.
+#
+# Two argv shapes, both from `robotd/src/sound.rs`:
+#
+#     aplay -q -D <dev> <file.wav>
+#     aplay -q -D <dev> -t raw -f S16_LE -c 1 -r <rate> [--buffer-time=N] [--period-time=N]
+#
+# **`exec`, not a call.** Everything that plays goes through one child that `robotd` kills to
+# cut the previous sound — spamming the chirp trigger is meant to be clean. A wrapper that
+# forked would die and leave the player orphaned, so every sound would pile on the last.
+#
+# The device name is parsed and ignored. There is one output here, the machine's, and
+# keeping the flag rather than refusing it is the point: the daemon is not modified to be
+# heard.
+
+set -eu
+
+raw=0
+rate=48000
+channels=1
+file=
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -q|--quiet)                      ;;
+        -D|--device)            shift    ;;  # one output here; the codec name is noise
+        -t) [ "${2:-}" = raw ] && raw=1; shift ;;
+        -f|--format)            shift    ;;  # S16_LE is the only format either caller uses
+        -c|--channels)          channels="${2:-1}"; shift ;;
+        -r|--rate)              rate="${2:-48000}"; shift ;;
+        --buffer-time=*|--period-time=*) ;;  # ALSA pacing; the player does its own
+        -*)                              ;;  # anything else: ignore rather than refuse
+        *)  file="$1"                    ;;
+    esac
+    shift
+done
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# The system's own `aplay`, on a machine that has one. Found by walking PATH and skipping
+# this script's own directory — we are called `aplay` and are ahead of it on purpose, so
+# `command -v aplay` would find us and we would exec ourselves until the stack gave out.
+system_aplay() {
+    mine=$(cd "$(dirname "$0")" && pwd)
+    saved_ifs=$IFS
+    IFS=:
+    for dir in $PATH; do
+        IFS=$saved_ifs
+        [ -n "$dir" ] || dir=.
+        here=$(cd "$dir" 2>/dev/null && pwd) || { IFS=:; continue; }
+        if [ "$here" != "$mine" ] && [ -x "$here/aplay" ]; then
+            printf '%s\n' "$here/aplay"
+            return 0
+        fi
+        IFS=:
+    done
+    IFS=$saved_ifs
+    return 1
+}
+
+# `-ch_layout`, not `-ac`: ffplay is not ffmpeg and has no channel-count option. It answers
+# "Option not found" and then plays the stream as stereo, at half speed.
+case "$channels" in
+    1) layout=mono ;;
+    2) layout=stereo ;;
+    *) layout="${channels}c" ;;
+esac
+
+if [ "$raw" = 1 ]; then
+    # Raw PCM on stdin: the theremin, the ride, a chorale part. Real ALSA first where it
+    # exists, because it is the thing being simulated. `-nodisp` because ffplay is a video
+    # player by trade, and the low-delay flags because the theremin's whole quality is the
+    # gap between moving a hand and hearing it — `robotd` keeps only 30 ms of lead.
+    if player=$(system_aplay); then
+        set -- "$player" -q -t raw -f S16_LE -c "$channels" -r "$rate"
+    elif have ffplay; then
+        set -- ffplay -hide_banner -loglevel quiet -nodisp -autoexit \
+            -fflags nobuffer -flags low_delay -probesize 32 \
+            -f s16le -ar "$rate" -ch_layout "$layout" -i -
+    else
+        set --
+    fi
+else
+    # Neither a raw stream nor a file: there is nothing to play. `robotd` never does this,
+    # but a shim that answers it by exec'ing a player with an empty path would turn a
+    # no-op into a failed child, and the daemon reads a failed child as a broken codec.
+    [ -n "$file" ] || exit 0
+
+    # A wav from the bank. `afplay` is in the base system on macOS and reads the bank's
+    # 48 kHz mono files directly.
+    if have afplay; then
+        set -- afplay "$file"
+    elif player=$(system_aplay); then
+        set -- "$player" -q "$file"
+    elif have ffplay; then
+        set -- ffplay -hide_banner -loglevel quiet -nodisp -autoexit -i "$file"
+    else
+        set --
+    fi
+fi
+
+# No player at all is not an error. A robot whose codec is absent walks identically and
+# stays quiet, and once the sound field exists the host speaker is a convenience rather
+# than the sink that matters.
+[ $# -gt 0 ] || exit 0
+
+# The tests need to know which player was chosen without a sound card in the runner.
+if [ "${TWIN_CODEC_DRY_RUN:-0}" = 1 ]; then
+    printf '%s\n' "$*"
+    exit 0
+fi
+
+exec "$@"

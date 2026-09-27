@@ -1,0 +1,44 @@
+# The codec has to answer the daemons on both systems a duck is developed from, and only one
+# of them is on the desk. macOS is where the work happens; Linux is where the robot's own
+# tooling lives, and a shim that only parses argv correctly on a Mac is a trap for everyone
+# else. Neither runner has a sound card, which is why the contract test asks the codec what
+# it *would* have exec'd rather than playing anything.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  codec:
+    name: codec on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: the codec answers the daemons
+        run: codec/tests/argv.sh
+
+      - name: it never execs itself
+        # We are called `aplay` and sit ahead of the system's on PATH on purpose. Resolving
+        # the player with `command -v aplay` would find this script, which would find it
+        # again. The guard is real code, so it gets a real test.
+        run: |
+          export PATH="$PWD/codec:$PATH"
+          resolved=$(TWIN_CODEC_DRY_RUN=1 aplay -q -D default /tmp/nothing.wav)
+          echo "resolved to: $resolved"
+          case "$resolved" in
+            *"$PWD/codec/aplay"*) echo "the codec resolved to itself"; exit 1 ;;
+          esac
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck --shell=sh codec/aplay codec/tests/argv.sh

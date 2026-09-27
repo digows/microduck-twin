@@ -1,11 +1,14 @@
 #!/bin/sh
 # The codec's contract with the daemons, checked without a sound card.
 #
-# Both argv shapes come verbatim from the callers, so this is a regression test on the
-# parser rather than on the player: `TWIN_CODEC_DRY_RUN` prints the command that would have
-# been exec'd. What it asserts is that the shapes are recognised and the numbers survive —
-# a duck whose theremin plays at the wrong rate sounds broken in a way nobody traces back
-# to argv.
+# Two things are being tested and they are kept apart on purpose. **What the argv meant** is
+# a contract with `robotd` and `sounds`: the same on every machine, and a regression here
+# makes a theremin play at the wrong rate in a way nobody traces back to a flag. **Which
+# player answers** depends on what the host has installed, so a runner with no ffmpeg is
+# allowed to resolve to nothing — that is a duck with no codec, which is a robot that walks
+# identically and stays quiet.
+#
+# `TWIN_CODEC_DRY_RUN` prints both, one per line, instead of playing.
 
 set -eu
 
@@ -13,47 +16,88 @@ here=$(cd "$(dirname "$0")" && pwd)
 codec=$(dirname "$here")
 failures=0
 
-check() {
-    want=$1
-    shift
-    got=$(TWIN_CODEC_DRY_RUN=1 "$codec/aplay" "$@" || true)
-    case "$got" in
-        *"$want"*) printf '  ok    %s\n' "$want" ;;
-        *)
-            printf '  FAIL  wanted %s\n        got    %s\n        argv   %s\n' \
-                "$want" "$got" "$*"
-            failures=$((failures + 1))
-            ;;
-    esac
+say_fail() {
+    printf '  FAIL  %s\n        wanted %s\n        got    %s\n' "$1" "$2" "$3"
+    failures=$((failures + 1))
 }
 
-echo "playback, a wav from the bank — robotd/src/sound.rs:305"
-check "greet_a.wav" -q -D default /tmp/greet_a.wav
+# What the argv meant.
+parse() {
+    label=$1
+    want=$2
+    shift 2
+    got=$(TWIN_CODEC_DRY_RUN=1 "$codec/aplay" "$@" | sed -n 's/^parse //p')
+    if [ "$got" = "$want" ]; then
+        printf '  ok    %s\n' "$label"
+    else
+        say_fail "$label" "$want" "$got"
+    fi
+}
 
-echo "playback, raw PCM on stdin — robotd/src/sound.rs:343"
-check "48000" -q -D default -t raw -f S16_LE -c 1 -r 48000 \
-    --buffer-time=40000 --period-time=10000
+# Which player answered, if any.
+resolved() {
+    TWIN_CODEC_DRY_RUN=1 "$codec/aplay" "$@" | sed -n 's/^exec //p'
+}
 
-echo "the rate survives, whatever it is — robotd/src/sound.rs:742 passes its own"
-check "16000" -q -D plughw:aic3104 -t raw -f S16_LE -c 1 -r 16000
+echo "the argv the daemons send"
+parse "a wav from the bank — robotd/src/sound.rs:305" \
+    "raw=0 rate=48000 channels=1 file=/tmp/greet_a.wav" \
+    -q -D default /tmp/greet_a.wav
+parse "raw PCM on stdin — robotd/src/sound.rs:343" \
+    "raw=1 rate=48000 channels=1 file=" \
+    -q -D default -t raw -f S16_LE -c 1 -r 48000 --buffer-time=40000 --period-time=10000
+parse "the rate survives — robotd/src/sound.rs:742 passes its own" \
+    "raw=1 rate=16000 channels=1 file=" \
+    -q -D plughw:aic3104 -t raw -f S16_LE -c 1 -r 16000
+parse "the sounds CLI leaves -D out — sounds/src/main.rs:170" \
+    "raw=1 rate=48000 channels=1 file=" \
+    -q -t raw -f S16_LE -c 1 -r 48000
+parse "an unknown flag is ignored rather than refused" \
+    "raw=1 rate=44100 channels=1 file=" \
+    -q -D default -t raw -f S16_LE -c 1 -r 44100 --some-future-alsa-flag
+parse "a device is never mistaken for a file" \
+    "raw=0 rate=48000 channels=1 file=" \
+    -q -D plughw:aic3104,0
 
-echo "the sounds CLI puts -D last, or leaves it out — sounds/src/main.rs:170"
-check "48000" -q -t raw -f S16_LE -c 1 -r 48000
+echo
+echo "the player it resolves to"
 
-echo "an unknown flag is ignored rather than refused"
-check "44100" -q -D default -t raw -f S16_LE -c 1 -r 44100 --some-future-alsa-flag
+# We are called `aplay` and sit ahead of the system's on PATH on purpose. Resolving with
+# `command -v aplay` would find this script, which would find it again until the stack gave
+# out, so the guard that walks PATH and skips our own directory gets a real test — with our
+# directory actually on PATH, which is the only way it can fail.
+PATH="$codec:$PATH"
+export PATH
+self=$(resolved -q -D default /tmp/greet_a.wav)
+case "$self" in
+    *"$codec/aplay"*) say_fail "it never execs itself" "anything but $codec/aplay" "$self" ;;
+    *)                printf '  ok    it never execs itself\n' ;;
+esac
 
-echo "nothing to play is a no-op, not a player with an empty argument"
-empty=$(TWIN_CODEC_DRY_RUN=1 "$codec/aplay" -q -D default || true)
+# A file with no player is silence, not a player invoked with an empty argument.
+empty=$(resolved -q -D default)
 if [ -z "$empty" ]; then
-    printf '  ok    silence\n'
+    printf '  ok    nothing to play is a no-op\n'
 else
-    printf '  FAIL  wanted nothing\n        got    %s\n' "$empty"
-    failures=$((failures + 1))
+    say_fail "nothing to play is a no-op" "" "$empty"
 fi
 
+# Where a player does exist, it has to be a real one. Both halves of this are reported
+# rather than asserted, because which players a host has is not this project's business.
+for shape in "wav:-q -D default /tmp/greet_a.wav" "raw:-q -D default -t raw -f S16_LE -c 1 -r 48000"; do
+    kind=${shape%%:*}
+    # shellcheck disable=SC2086  # the argv is the point; it has to split
+    player=$(resolved ${shape#*:})
+    if [ -n "$player" ]; then
+        printf '  note  %s plays through %s\n' "$kind" "${player%% *}"
+    else
+        printf '  note  %s has no player on this host — the duck is quiet\n' "$kind"
+    fi
+done
+
+echo
 if [ "$failures" -gt 0 ]; then
-    printf '\n%s check(s) failed\n' "$failures"
+    printf '%s check(s) failed\n' "$failures"
     exit 1
 fi
-printf '\nthe codec answers the daemons\n'
+printf 'the codec answers the daemons\n'

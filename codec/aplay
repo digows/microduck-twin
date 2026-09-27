@@ -91,14 +91,16 @@ if [ "$raw" = 1 ]; then
         set --
     fi
 else
-    # Neither a raw stream nor a file: there is nothing to play. `robotd` never does this,
-    # but a shim that answers it by exec'ing a player with an empty path would turn a
-    # no-op into a failed child, and the daemon reads a failed child as a broken codec.
-    [ -n "$file" ] || exit 0
-
     # A wav from the bank. `afplay` is in the base system on macOS and reads the bank's
     # 48 kHz mono files directly.
-    if have afplay; then
+    #
+    # Neither a raw stream nor a file means there is nothing to play. `robotd` never does
+    # that, but answering it by exec'ing a player with an empty path would turn a no-op
+    # into a failed child, and the daemon reads a failed child as a broken codec. It is a
+    # branch rather than an early exit so that the dry-run below still reports the parse.
+    if [ -z "$file" ]; then
+        set --
+    elif have afplay; then
         set -- afplay "$file"
     elif player=$(system_aplay); then
         set -- "$player" -q "$file"
@@ -109,15 +111,19 @@ else
     fi
 fi
 
+# The tests need this without a sound card in the runner, and they need the two halves
+# apart: what the argv meant is a contract with the daemons and is the same everywhere,
+# while which player answers depends on what the host has installed. Conflating them makes
+# a green suite on a laptop and a red one on a runner that has no ffmpeg.
+if [ "${TWIN_CODEC_DRY_RUN:-0}" = 1 ]; then
+    printf 'parse raw=%s rate=%s channels=%s file=%s\n' "$raw" "$rate" "$channels" "$file"
+    printf 'exec %s\n' "$*"
+    exit 0
+fi
+
 # No player at all is not an error. A robot whose codec is absent walks identically and
 # stays quiet, and once the sound field exists the host speaker is a convenience rather
 # than the sink that matters.
 [ $# -gt 0 ] || exit 0
-
-# The tests need to know which player was chosen without a sound card in the runner.
-if [ "${TWIN_CODEC_DRY_RUN:-0}" = 1 ]; then
-    printf '%s\n' "$*"
-    exit 0
-fi
 
 exec "$@"

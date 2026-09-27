@@ -1,8 +1,13 @@
 # The codec has to answer the daemons on both systems a duck is developed from, and only one
-# of them is on the desk. macOS is where the work happens; Linux is where the robot's own
-# tooling lives, and a shim that only parses argv correctly on a Mac is a trap for everyone
-# else. Neither runner has a sound card, which is why the contract test asks the codec what
-# it *would* have exec'd rather than playing anything.
+# of them is ever on the desk. macOS is where the work happens; Linux is where the robot's
+# own tooling lives, and a shim that parses argv correctly only on a Mac is a trap for
+# everyone else.
+#
+# Neither runner has a sound card, which is why the contract test asks the codec what it
+# *would* have exec'd rather than playing anything. Linux installs `alsa-utils` all the
+# same: the PATH guard — we are called `aplay` and sit ahead of the system's on purpose —
+# can only fail on a host that has a real one to find, so without it the riskiest line in
+# the shim would be covered by nothing.
 name: ci
 
 on:
@@ -20,20 +25,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: a real aplay to be shadowed
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y alsa-utils
+
       - name: the codec answers the daemons
         run: codec/tests/argv.sh
-
-      - name: it never execs itself
-        # We are called `aplay` and sit ahead of the system's on PATH on purpose. Resolving
-        # the player with `command -v aplay` would find this script, which would find it
-        # again. The guard is real code, so it gets a real test.
-        run: |
-          export PATH="$PWD/codec:$PATH"
-          resolved=$(TWIN_CODEC_DRY_RUN=1 aplay -q -D default /tmp/nothing.wav)
-          echo "resolved to: $resolved"
-          case "$resolved" in
-            *"$PWD/codec/aplay"*) echo "the codec resolved to itself"; exit 1 ;;
-          esac
 
   shell:
     name: shellcheck

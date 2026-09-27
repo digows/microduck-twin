@@ -316,10 +316,13 @@ start_body() {
     [ -n "$CAMERAS" ] && cams="--cameras $CAMERAS --frame-port $FRAME_PORT --camera-fps 30"
 
     say "body: starting $DUCKS duck(s) in $SCENE"
+    # `twin_body` rather than `mjlab_microduck.sim.body_server`: it imports that module,
+    # rebinds the two class names its `main()` looks up, and runs it. Every argument below
+    # is the body server's own. PYTHONPATH rather than an install, so the simulator's venv
+    # stays exactly what `uv sync` made it.
     # shellcheck disable=SC2086  # the arguments are built above and have to split
-    # The body's argv carries no path under the state directory — its scene comes from the
-    # simulator checkout — so the port it was given is what identifies it.
-    spawn body "body_server --port $PORT" "$py" -m mjlab_microduck.sim.body_server \
+    PYTHONPATH="$HERE/twin-body${PYTHONPATH:+:$PYTHONPATH}" \
+        spawn body "twin_body --port $PORT" "$py" -m twin_body \
         --port "$PORT" --ducks "$DUCKS" --keyframe "$KEYFRAME" $headless $scene_arg $cams
     wait_for_port "$PORT" || die "the body never opened $PORT. $STATE/body.log has why."
 }
@@ -406,11 +409,19 @@ ctl() {
 }
 
 # `robot init` powers the joints and ramps to the home pose; the sitstand policy rises from
-# SIT on its own once the robot is handed to it.
+# SIT on its own once the robot is handed to it. Every duck, not only the one `ctl` points
+# at — a second duck left sitting is a second duck whose head is at the wrong height, and
+# the field would have it listening from the floor.
 stand() {
     say "standing up"
-    ctl robot init >/dev/null 2>&1 || true
-    ctl robot enable >/dev/null 2>&1 || true
+    i=0
+    while [ "$i" -lt "$DUCKS" ]; do
+        DUCK=$(duck_name "$i")
+        ctl robot init >/dev/null 2>&1 || true
+        ctl robot enable >/dev/null 2>&1 || true
+        i=$((i + 1))
+    done
+    DUCK="${TWIN_DUCK:-duck-a}"
 }
 
 up() {
@@ -455,6 +466,20 @@ status() {
     ctl health 2>/dev/null || warn "robotd is not answering."
 }
 
+# Everything that can be checked without a duck being up. The occlusion test needs the
+# simulator's venv for MuJoCo and the apartment, so it is skipped rather than failed on a
+# machine that has not run `up` yet.
+tests() {
+    "$HERE/codec/tests/argv.sh"
+    echo
+    if [ -x "$MICRODUCK_RL/.venv/bin/python" ]; then
+        TWIN_MICRODUCK_RL="$MICRODUCK_RL" \
+            "$MICRODUCK_RL/.venv/bin/python" "$HERE/twin-body/tests/occlusion.py"
+    else
+        warn "no venv at $MICRODUCK_RL — run \`up\` once for the geometry tests"
+    fi
+}
+
 usage() {
     cat <<TEXT
 microduck-twin — a complete Microduck, on a machine that is not one.
@@ -465,6 +490,7 @@ microduck-twin — a complete Microduck, on a machine that is not one.
   status        what is running, and the duck's health
   log [WHAT]    a daemon's log (default: robotd)
   doctor        what the host is missing, and the line to paste
+  test          the codec's contract, and the geometry the field reads
 
 Environment: TWIN_STATE TWIN_DUCKS TWIN_PORT TWIN_SCENE TWIN_KEYFRAME
              TWIN_CAMERAS TWIN_VIEWER TWIN_DUCK TWIN_MICRODUCK TWIN_MICRODUCK_RL
@@ -480,6 +506,7 @@ case "$cmd" in
     status)  status ;;
     log)     what="${1:-$DUCK}"; exec tail -f "$STATE/$what.log" ;;
     doctor)  doctor ;;
+    test)    tests ;;
     -h|--help|help) usage ;;
     *)       usage; exit 1 ;;
 esac

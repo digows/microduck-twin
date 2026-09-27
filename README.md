@@ -29,8 +29,8 @@ This project is the device that is missing.
 |---|---|
 | **One command** — `./microduck-twin up`, pinned upstreams, nothing to remember | **works** |
 | **Voice** — the duck is audible on a machine with no ALSA | **works** |
+| **Battery and thermals** — they move with what the robot is doing | **works** |
 | **Ear** — the head microphone as a sensor of the simulated world | in progress |
-| **Battery and thermals** — today they are constants | planned |
 | **Console** — the duck in 3D, knobs, every sensor, rollers | planned |
 
 ## Why this is not the forty-first Microduck simulator
@@ -64,6 +64,24 @@ written, and `AudioParams::capture_device()` appends `,0` when no subdevice was 
 
 So a simulated TLV320AIC3104 is a pair of executables on `PATH`, and the daemons are not modified
 to gain a voice or an ear. It is the same move `RemoteIo` makes for the servo bus, one layer up.
+
+### The body, extended rather than forked
+
+`duck-body` reports 7.4 V and 32 °C for every duck for ever, and carries nothing about the
+head — which is enough for a radio and not enough for an ear. `twin-body` subclasses two of its
+classes and rebinds the names its `main()` looks up. That is the whole override; no file in
+`microduck_rl` is touched, and a version bump there is a pinned-dependency change.
+
+The battery drains from the torque the servos are holding and the daemon does the rest, by the
+code that runs on the robot: it maps volts to a percentage linearly between 8.2 and 6.6 V and
+powers the duck down at empty. A standing duck lasts about three quarters of an hour. The servos
+warm with the square of their torque and cool toward ambient, and the hips settle near the 32 °C
+the constant used to report — the one point upstream had an opinion about.
+
+One op is added, `hears`: where this duck's ear is, and for every other duck how far away it is
+and whether anything is in the way. One round trip per audio tick rather than one per pair, with
+the ray casting kept where the model is. It is additive, so a simulator that predates it answers
+`unknown op` and the field falls back to distance without direction.
 
 Behind them sits the sound field: one process holding a connection per duck, in the shape
 [`duck-ether`](https://github.com/pollen-robotics/microduck/blob/main/duck-ether/src/main.rs)

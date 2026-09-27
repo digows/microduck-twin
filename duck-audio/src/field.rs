@@ -112,7 +112,7 @@ pub fn delay_samples(distance: f32) -> usize {
 /// aliases would land on top of the signal `pet-detect` is classifying.
 pub fn downsample(block: &[f32], out: &mut Vec<i16>) {
     out.clear();
-    for chunk in block.chunks_exact(3).take(MIC_BLOCK) {
+    for chunk in block.as_chunks::<3>().0.iter().take(MIC_BLOCK) {
         let mean = (chunk[0] + chunk[1] + chunk[2]) / 3.0;
         out.push(mean.clamp(i16::MIN as f32, i16::MAX as f32) as i16);
     }

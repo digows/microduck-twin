@@ -59,10 +59,7 @@ fn main() {
         if std::io::stdin().read_to_end(&mut bytes).is_err() {
             return;
         }
-        let pcm: Vec<i16> = bytes
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
-            .collect();
+        let pcm: Vec<i16> = bytes.as_chunks::<2>().0.iter().copied().map(i16::from_le_bytes).collect();
         resample(&pcm, rate, channels)
     } else {
         return;
@@ -113,8 +110,11 @@ fn decode_wav(bytes: &[u8]) -> Option<(Vec<i16>, u32, u16)> {
             b"data" => {
                 pcm = Some(
                     bytes[body..body + size]
-                        .chunks_exact(2)
-                        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .copied()
+                        .map(i16::from_le_bytes)
                         .collect::<Vec<_>>(),
                 );
             }

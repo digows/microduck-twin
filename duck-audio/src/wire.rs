@@ -38,8 +38,11 @@ pub fn serve_speaker(port: u16, out: SyncSender<Vec<i16>>) -> std::io::Result<()
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         let samples = buf[..n - (n % 2)]
-                            .chunks_exact(2)
-                            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .copied()
+                            .map(i16::from_le_bytes)
                             .collect::<Vec<_>>();
                         if !samples.is_empty() && out.send(samples).is_err() {
                             break;

@@ -1,0 +1,480 @@
+#!/bin/sh
+# microduck-twin — a complete Microduck, on a machine that is not one.
+#
+# Pollen's own `scripts/duck-sim` is what this grew out of and is the record of every
+# argument the daemons take; read it when something here looks arbitrary. What this adds is
+# the sense that one is missing: the codec goes on PATH before anything starts, so the duck
+# can be heard, and — once the field lands — can hear.
+#
+# Everything upstream is a pinned dependency, cloned under the state directory and never
+# patched. `deps.env` says which commits. A checkout you already have wins over both.
+
+set -eu
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+
+# Short on purpose. A unix socket path is capped at about 108 bytes and every daemon here
+# gets one, so a state directory under a deep working tree runs out of room in the middle of
+# a name and the failure reads as a daemon that will not start.
+STATE="${TWIN_STATE:-$HOME/.cache/microduck-twin}"
+
+DUCKS="${TWIN_DUCKS:-1}"
+PORT="${TWIN_PORT:-7801}"
+FRAME_PORT="${TWIN_FRAME_PORT:-7901}"
+SCENE="${TWIN_SCENE:-apartment}"
+KEYFRAME="${TWIN_KEYFRAME:-SIT}"
+CAMERAS="${TWIN_CAMERAS:-}"
+VIEWER="${TWIN_VIEWER:-0}"
+DUCK="${TWIN_DUCK:-duck-a}"
+
+LETTERS=abcdefghijklmnopqrstuvwxyz
+
+# shellcheck disable=SC1091  # written beside this script, read at run time
+. "$HERE/deps.env"
+
+MICRODUCK="${TWIN_MICRODUCK:-$STATE/src/microduck}"
+MICRODUCK_RL="${TWIN_MICRODUCK_RL:-$STATE/src/microduck_rl}"
+
+say()  { printf '\033[36m==\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m==\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[31m==\033[0m %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+duck_name() { printf 'duck-%s\n' "$(printf %s "$LETTERS" | cut -c$(($1 + 1)))"; }
+duck_port() { echo $((PORT + $1)); }
+
+# Our codec ahead of everything, so `robotd` forks ours rather than finding nothing. This is
+# the single line that separates this twin from the one upstream ships.
+PATH="$HERE/codec:$PATH"
+export PATH
+
+# `setsid` puts each daemon in its own process group, which is what makes stopping one a
+# single signal rather than a hunt. macOS has no setsid and does not need it: the shell is
+# not a session leader here either way.
+SETSID=""
+have setsid && SETSID=setsid
+
+# ── what the host has to have ───────────────────────────────────────────────────
+
+doctor() {
+    missing=0
+    check() {
+        if have "$1"; then
+            printf '  \033[32mok\033[0m    %-9s %s\n' "$1" "$(command -v "$1")"
+        else
+            printf '  \033[31m--\033[0m    %-9s %s\n' "$1" "$2"
+            missing=$((missing + 1))
+        fi
+    }
+    echo "what a twin needs"
+    check git   "install git"
+    check cargo "install Rust: https://rustup.rs"
+    check uv    "install uv: https://docs.astral.sh/uv/"
+    echo
+    echo "what makes it audible"
+    if have ffplay || have aplay || have afplay; then
+        printf '  \033[32mok\033[0m    a player  %s\n' \
+            "$(command -v ffplay || command -v aplay || command -v afplay)"
+    else
+        printf '  \033[33m--\033[0m    a player  brew install ffmpeg (macOS) or apt install alsa-utils\n'
+        printf '            without one the duck is quiet, which is a robot with no codec\n'
+    fi
+    [ "$missing" = 0 ] || die "$missing tool(s) missing — the lines above are what to paste."
+}
+
+# ── the upstreams, pinned ───────────────────────────────────────────────────────
+
+pin() {
+    url=$1 dir=$2 ref=$3 what=$4
+    if [ -n "${5:-}" ]; then
+        say "$what: using your checkout at $dir"
+        [ -d "$dir/.git" ] || die "$dir is not a git checkout"
+        return 0
+    fi
+    if [ ! -d "$dir/.git" ]; then
+        say "$what: cloning $url"
+        mkdir -p "$(dirname "$dir")"
+        git clone --quiet "$url" "$dir"
+    fi
+    if [ "$(git -C "$dir" rev-parse HEAD)" != "$ref" ]; then
+        say "$what: checking out ${ref%"${ref#???????}"}"
+        git -C "$dir" fetch --quiet origin "$ref" 2>/dev/null || git -C "$dir" fetch --quiet
+        git -C "$dir" -c advice.detachedHead=false checkout --quiet "$ref"
+    fi
+}
+
+sources() {
+    pin https://github.com/pollen-robotics/microduck.git \
+        "$MICRODUCK" "$MICRODUCK_REF" "daemons" "${TWIN_MICRODUCK:-}"
+    pin https://github.com/pollen-robotics/microduck_rl.git \
+        "$MICRODUCK_RL" "$MICRODUCK_RL_REF" "body" "${TWIN_MICRODUCK_RL:-}"
+}
+
+venv() {
+    [ -x "$MICRODUCK_RL/.venv/bin/python" ] && return 0
+    say "body: creating the simulator's venv (this pulls MuJoCo and takes a minute)"
+    (cd "$MICRODUCK_RL" && UV_HTTP_TIMEOUT=600 uv sync --quiet)
+}
+
+# `ort` dlopens whatever this points at, and the wheel names the file after the platform:
+# `.so.<version>` on Linux, `.<version>.dylib` on macOS. Both spellings are looked for.
+ort_dylib() {
+    find "$MICRODUCK_RL"/.venv/lib/python*/site-packages/onnxruntime/capi \
+        \( -name 'libonnxruntime.so*' -o -name 'libonnxruntime*.dylib' \) -type f 2>/dev/null |
+        head -1
+}
+
+daemons() {
+    say "daemons: building"
+    (cd "$MICRODUCK" && cargo build --quiet \
+        -p robotd -p robotctl -p tof -p sounds -p configd -p updater)
+}
+
+# A checkout has no policies: they live on the Hub and reach a robot at install time. A duck
+# started against seven missing files comes up degraded and never stands.
+policies() {
+    POLICIES="$STATE/policies/current"
+    [ -f "$POLICIES/alpha_stand.onnx" ] && return 0
+    say "policies: fetching the official set"
+    sh "$MICRODUCK/scripts/seed-policies.sh" "$STATE/policies" || true
+    [ -f "$POLICIES/alpha_stand.onnx" ] ||
+        die "no policy set in $STATE/policies — it needs the network once."
+}
+
+# ── params ──────────────────────────────────────────────────────────────────────
+
+params() {
+    name=$1
+    cat > "$STATE/robotd-$name.toml" <<TOML
+# Written by microduck-twin. Every policy is named explicitly because RELEASE_DIR is
+# /opt/robot/daemon/current, which exists on a robot and not here.
+[policy]
+enabled = true
+walk = "$POLICIES/alpha_walking.onnx"
+stand = "$POLICIES/alpha_stand.onnx"
+sitstand = "$POLICIES/alpha_sitstand.onnx"
+ground_pick = "$POLICIES/alpha_ground_pick.onnx"
+kick_left = "$POLICIES/ball_kick_left.onnx"
+kick_right = "$POLICIES/ball_kick_right.onnx"
+roulade = "$POLICIES/roulade.onnx"
+
+# A room of ducks that will not sing together is a poor demonstration of a room of ducks.
+[chorale]
+accept = true
+
+[audio]
+bank = "$STATE/sounds/$name"
+# One key drives both directions: robotd passes it to aplay as written, and
+# AudioParams::capture_device appends ,0 for arecord. "default" rather than the board's
+# plughw:aic3104 so the codec on PATH is reached instead of a card that is not here.
+device = "default"
+
+[theremin]
+socket = "$STATE/$name-tof.sock"
+TOML
+}
+
+voice() {
+    name=$1
+    [ -d "$STATE/sounds/$name" ] && return 0
+    say "$name: rendering a voice"
+    DUCK_IDENTITY="$name" "$MICRODUCK/target/debug/sounds" ensure-bank \
+        --dir "$STATE/sounds/$name" >/dev/null 2>&1 || warn "$name has no voice"
+}
+
+# ── starting and stopping ───────────────────────────────────────────────────────
+
+# **A pid is not an identity.** Pidfiles go stale and pids are recycled, so every process
+# started here also records a string that must still appear in its argv before anything
+# signals it. Upstream learned this the expensive way: a group kill on a recycled pid took
+# out a login session and the machine had to be rebooted. Nothing below signals a pid
+# without confirming what it is first, and nothing kills a process group.
+spawn() {
+    tag=$1 expect=$2
+    shift 2
+    # shellcheck disable=SC2086  # SETSID is a command or nothing, and must split
+    $SETSID nohup "$@" > "$STATE/$tag.log" 2>&1 &
+    echo $! > "$STATE/$tag.pid"
+    printf '%s\n' "$expect" > "$STATE/$tag.expect"
+}
+
+# What a pid says it is. /proc is Linux and a Mac has none, so `ps` answers there. A dead pid
+# must not fall through and get a second opinion, so an unreadable cmdline is the answer.
+cmdline_of() {
+    if [ -d /proc ]; then
+        tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || true
+    else
+        ps -o command= -p "$1" 2>/dev/null || true
+    fi
+}
+
+stop_one() {
+    tag=$1
+    pidfile="$STATE/$tag.pid"
+    expectfile="$STATE/$tag.expect"
+    [ -f "$pidfile" ] || return 0
+    pid=$(cat "$pidfile")
+
+    # A pidfile written by an older version of this script has no companion. Falling back to
+    # the state directory covers every daemon, whose argv carries a socket or a params path
+    # under it; the body is the one exception, because its argv names only the simulator
+    # checkout and the port. Silence here is the bug that orphaned a whole duck once: the
+    # pidfiles went away, the processes did not, and the next `up` found the port taken.
+    if [ -f "$expectfile" ]; then
+        expect=$(cat "$expectfile")
+    elif [ "$tag" = body ]; then
+        expect="body_server --port $PORT"
+    else
+        expect="$STATE"
+    fi
+
+    if kill -0 "$pid" 2>/dev/null; then
+        case "$(cmdline_of "$pid")" in
+            *"$expect"*) kill "$pid" 2>/dev/null || true ;;
+            *) warn "$tag: pid $pid is something else now — leaving it alone" ;;
+        esac
+    fi
+    rm -f "$pidfile" "$expectfile"
+}
+
+# What `down` could not account for. Every process started here has the state directory or
+# the body's port in its argv, so anything still matching after the pidfiles are spent is
+# either an orphan or another twin — and both are worth saying out loud rather than
+# discovering as "address already in use" on the next `up`.
+leftovers() {
+    found=$(ps -o pid=,command= -A 2>/dev/null |
+        grep -F -e "$STATE" -e "body_server --port $PORT" |
+        grep -v grep || true)
+    [ -n "$found" ] || return 0
+    warn "still running after down:"
+    printf '%s\n' "$found" | while IFS= read -r line; do
+        warn "  $(printf '%s' "$line" | cut -c1-96)"
+    done
+    warn "if they are yours: kill the pids above."
+}
+
+down() {
+    [ -d "$STATE" ] || return 0
+    for f in "$STATE"/*.pid; do
+        [ -e "$f" ] || continue
+        base=$(basename "$f" .pid)
+        stop_one "$base"
+    done
+    rm -f "$STATE"/*.sock
+    leftovers
+    say "down"
+}
+
+wait_for_port() {
+    n=0
+    while [ "$n" -lt 150 ]; do
+        if "$MICRODUCK_RL/.venv/bin/python" -c "
+import socket,sys
+s=socket.socket(); s.settimeout(0.3)
+sys.exit(0 if s.connect_ex(('127.0.0.1',$1))==0 else 1)" 2>/dev/null; then
+            return 0
+        fi
+        n=$((n + 1))
+        sleep 0.2
+    done
+    return 1
+}
+
+wait_for_socket() {
+    n=0
+    while [ "$n" -lt 150 ]; do
+        [ -S "$1" ] && return 0
+        n=$((n + 1))
+        sleep 0.2
+    done
+    return 1
+}
+
+start_body() {
+    py="$MICRODUCK_RL/.venv/bin/python"
+    headless=--headless
+    # The viewer has to own the main thread on macOS, and `mjpython` is the launcher the
+    # MuJoCo wheel ships for exactly that. Linux needs no such thing.
+    if [ "$VIEWER" = 1 ]; then
+        headless=
+        [ "$(uname -s)" = Darwin ] && [ -x "$MICRODUCK_RL/.venv/bin/mjpython" ] &&
+            py="$MICRODUCK_RL/.venv/bin/mjpython"
+    fi
+
+    case "$SCENE" in
+        "")   scene_arg="" ;;
+        */*)  scene_arg="--scene $SCENE" ;;
+        *)    scene_arg="--scene $MICRODUCK_RL/src/mjlab_microduck/robot/microduck/scene_$SCENE.xml" ;;
+    esac
+
+    cams=""
+    [ -n "$CAMERAS" ] && cams="--cameras $CAMERAS --frame-port $FRAME_PORT --camera-fps 30"
+
+    say "body: starting $DUCKS duck(s) in $SCENE"
+    # shellcheck disable=SC2086  # the arguments are built above and have to split
+    # The body's argv carries no path under the state directory — its scene comes from the
+    # simulator checkout — so the port it was given is what identifies it.
+    spawn body "body_server --port $PORT" "$py" -m mjlab_microduck.sim.body_server \
+        --port "$PORT" --ducks "$DUCKS" --keyframe "$KEYFRAME" $headless $scene_arg $cams
+    wait_for_port "$PORT" || die "the body never opened $PORT. $STATE/body.log has why."
+}
+
+start_daemons() {
+    ORT=$(ort_dylib)
+    [ -n "$ORT" ] || die "no onnxruntime in $MICRODUCK_RL/.venv — the policies cannot load."
+    bin="$MICRODUCK/target/debug"
+
+    i=0
+    while [ "$i" -lt "$DUCKS" ]; do
+        name=$(duck_name "$i")
+        port=$(duck_port "$i")
+        mkdir -p "$STATE/$name/updater" "$STATE/$name/policies"
+        params "$name"
+        voice "$name"
+
+        DUCK_RUNTIME_DIR="$STATE" spawn "$name-tof" "$STATE/$name-tof.sock" "$bin/tofd" \
+            --sim "127.0.0.1:$port" --socket "$STATE/$name-tof.sock"
+
+        DUCK_RUNTIME_DIR="$STATE" spawn "$name-config" "$STATE/$name-config.sock" "$bin/configd" \
+            --socket "$STATE/$name-config.sock" --state-dir "$STATE/$name" \
+            --simulated "sim-$name" --fake-net --fake-pads
+
+        cat > "$STATE/updater-$name.toml" <<TOML
+trusted_keys_dir = "$MICRODUCK/deploy/trusted_keys"
+hw_rev = 1
+state_dir = "$STATE/$name/updater"
+robot_socket = "$STATE/$name.sock"
+policy_library = "$STATE/$name/policies"
+auto_apply = "off"
+[component.daemon]
+install_dir = "$STATE/$name/daemon"
+keep_previous = 1
+[component.daemon.source]
+type = "github_releases"
+repo = "pollen-robotics/microduck"
+tag_prefix = "daemon-v"
+manifest_asset = "manifest.json"
+[component.daemon.on_apply]
+action = "restart"
+units = []
+[component.daemon.health]
+probe = "socket"
+timeout = "30s"
+TOML
+        DUCK_RUNTIME_DIR="$STATE" spawn "$name-updater" "$STATE/$name-updater.sock" "$bin/updaterd" \
+            --config "$STATE/updater-$name.toml" --socket "$STATE/$name-updater.sock" \
+            --token "$STATE/$name/hf-token"
+
+        DUCK_IDENTITY="$name" DUCK_RUNTIME_DIR="$STATE" ORT_DYLIB_PATH="$ORT" \
+            RUST_LOG="${RUST_LOG:-info}" \
+            spawn "$name" "$STATE/$name.sock" "$bin/robotd" --sim "127.0.0.1:$port" \
+            --params "$STATE/robotd-$name.toml" --socket "$STATE/$name.sock"
+
+        i=$((i + 1))
+    done
+
+    wait_for_socket "$STATE/$(duck_name 0).sock" ||
+        die "robotd did not come up. $STATE/$(duck_name 0).log has why."
+}
+
+# `--socket` is the *updater's*, not the robot's: robotctl is the update engine's client
+# first, and `health` and `version` are the two commands that also ask the robot about
+# itself. Getting this wrong gives "unexpected argument", which reads like a version skew
+# and is not one.
+#
+# `configure` edits a file rather than talking to a socket, and its `--file` is not a global
+# flag, so it is the one subcommand that has to be told which duck's params to open. Left
+# alone it reads /etc/robot/robotd.toml, which is right on a robot and absent here — and the
+# answer then is "changes nothing", about a file nobody has.
+ctl() {
+    name="$DUCK"
+    if [ "${1:-}" = configure ]; then
+        shift
+        set -- configure --file "$STATE/robotd-$name.toml" "$@"
+    fi
+    DUCK_RUNTIME_DIR="$STATE" "$MICRODUCK/target/debug/robotctl" \
+        --robot-socket "$STATE/$name.sock" \
+        --tof-socket "$STATE/$name-tof.sock" \
+        --config-socket "$STATE/$name-config.sock" \
+        --socket "$STATE/$name-updater.sock" \
+        "$@"
+}
+
+# `robot init` powers the joints and ramps to the home pose; the sitstand policy rises from
+# SIT on its own once the robot is handed to it.
+stand() {
+    say "standing up"
+    ctl robot init >/dev/null 2>&1 || true
+    ctl robot enable >/dev/null 2>&1 || true
+}
+
+up() {
+    doctor
+    sources
+    venv
+    daemons
+    policies
+    down
+    mkdir -p "$STATE"
+    start_body
+    start_daemons
+    stand
+    echo
+    ctl health 2>/dev/null | head -3 || true
+    cat <<TEXT
+
+  Your duck is up, and it can be heard.
+
+    ./microduck-twin ctl quack        its own voice, from its own serial
+    ./microduck-twin ctl health       or anything else robotctl does
+    ./microduck-twin ctl robot do roulade
+    ./microduck-twin log              what the daemon is saying
+    ./microduck-twin down
+
+TEXT
+}
+
+status() {
+    [ -d "$STATE" ] || die "nothing is up."
+    for f in "$STATE"/*.pid; do
+        [ -e "$f" ] || continue
+        base=$(basename "$f" .pid)
+        pid=$(cat "$f")
+        if kill -0 "$pid" 2>/dev/null; then
+            printf '  \033[32mup\033[0m    %-14s pid %s\n' "$base" "$pid"
+        else
+            printf '  \033[31mdead\033[0m  %-14s see %s.log\n' "$base" "$base"
+        fi
+    done
+    echo
+    ctl health 2>/dev/null || warn "robotd is not answering."
+}
+
+usage() {
+    cat <<TEXT
+microduck-twin — a complete Microduck, on a machine that is not one.
+
+  up            bring up the body, the daemons and the codec
+  down          stop everything
+  ctl ARGS...   robotctl, aimed at this duck
+  status        what is running, and the duck's health
+  log [WHAT]    a daemon's log (default: robotd)
+  doctor        what the host is missing, and the line to paste
+
+Environment: TWIN_STATE TWIN_DUCKS TWIN_PORT TWIN_SCENE TWIN_KEYFRAME
+             TWIN_CAMERAS TWIN_VIEWER TWIN_DUCK TWIN_MICRODUCK TWIN_MICRODUCK_RL
+TEXT
+}
+
+cmd="${1:-up}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    up)      up "$@" ;;
+    down)    down ;;
+    ctl)     ctl "$@" ;;
+    status)  status ;;
+    log)     what="${1:-$DUCK}"; exec tail -f "$STATE/$what.log" ;;
+    doctor)  doctor ;;
+    -h|--help|help) usage ;;
+    *)       usage; exit 1 ;;
+esac

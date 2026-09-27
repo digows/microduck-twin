@@ -27,10 +27,11 @@ This project is the device that is missing.
 
 | | |
 |---|---|
+| **One command** — `./microduck-twin up`, pinned upstreams, nothing to remember | **works** |
 | **Voice** — the duck is audible on a machine with no ALSA | **works** |
 | **Ear** — the head microphone as a sensor of the simulated world | in progress |
 | **Battery and thermals** — today they are constants | planned |
-| **One command, one console** — 3D duck, knobs, sensors, rollers | planned |
+| **Console** — the duck in 3D, knobs, every sensor, rollers | planned |
 
 ## Why this is not the forty-first Microduck simulator
 
@@ -85,26 +86,25 @@ pinned by version and consumed as they are.
 
 ## Quickstart
 
-> The shape this is going to have. Today only the codec is here; see **Status**.
-
 ```sh
 git clone https://github.com/digows/microduck-twin
 cd microduck-twin
-./microduck-twin up            # the body, the daemons, the field and a console
-./microduck-twin ctl quack     # heard by the duck next to it
+./microduck-twin doctor        # what the host is missing, as the line to paste
+./microduck-twin up            # the body, the daemons, the codec
+./microduck-twin ctl quack     # its own voice, from its own serial — audible
+./microduck-twin ctl robot do roulade
 ./microduck-twin down
 ```
 
-Right now, the voice alone, against a duck you already have running under
-[`duck-sim`](https://github.com/pollen-robotics/microduck/blob/main/docs/robot/simulation.md):
+The first `up` clones the two upstreams at the commits in `deps.env`, builds the daemons, makes
+the simulator's venv and fetches the official policy set. After that it takes seconds. To work
+against checkouts you already have, point `TWIN_MICRODUCK` and `TWIN_MICRODUCK_RL` at them.
 
-```sh
-export PATH="$PWD/codec:$PATH"
-scripts/duck-sim ctl quack     # audible, from the duck's own serial-derived bank
-```
+You need `git`, `cargo` and `uv`. macOS also wants `ffmpeg` for the raw-PCM path — `afplay` is in
+the base system and Linux uses its own ALSA. Without any player the duck is simply quiet, which is
+a robot whose codec is not fitted.
 
-macOS needs `ffmpeg` for the raw-PCM path (`brew install ffmpeg`); `afplay` is in the base
-system. Linux uses its own ALSA and needs nothing.
+The field and the console are not here yet; see **Status**.
 
 ## Credits
 

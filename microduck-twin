@@ -104,6 +104,8 @@ pin() {
 }
 
 sources() {
+    # shellcheck disable=SC2153  # MICRODUCK_REF and MICRODUCK_RL_REF come from deps.env,
+    # sourced above; shellcheck reads one file and reasonably suspects a typo of MICRODUCK_RL.
     pin https://github.com/pollen-robotics/microduck.git \
         "$MICRODUCK" "$MICRODUCK_REF" "daemons" "${TWIN_MICRODUCK:-}"
     pin https://github.com/pollen-robotics/microduck_rl.git \
@@ -242,6 +244,9 @@ stop_one() {
 # either an orphan or another twin — and both are worth saying out loud rather than
 # discovering as "address already in use" on the next `up`.
 leftovers() {
+    # shellcheck disable=SC2009  # pgrep matches argv but will not print it, and the whole
+    # point here is to show the human which command line is still running so they can judge
+    # whether it is theirs. `pgrep -af` would do it and is Linux-only.
     found=$(ps -o pid=,command= -A 2>/dev/null |
         grep -F -e "$STATE" -e "body_server --port $PORT" |
         grep -v grep || true)

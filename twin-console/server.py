@@ -318,6 +318,19 @@ class Console(BaseHTTPRequestHandler):
         if path == "/push":
             return self._json(self.body.ask("push", vx=payload.get("vx", 0.7),
                                             vy=payload.get("vy", 0.0)))
+        if path == "/roller":
+            # **This restarts the twin, including this server.** Wheels are another robot
+            # and another MJCF, and MuJoCo compiles its model — so the toggle is a bring-up,
+            # not a switch. Detached and unwaited, because the reply has to leave before
+            # `down` reaches the console's own pidfile; the page notices the gap and comes
+            # back when the new one answers.
+            import subprocess
+
+            want = "on" if payload.get("on") else "off"
+            twin = os.path.join(os.path.dirname(HERE), "microduck-twin")
+            subprocess.Popen([twin, "roller", want], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return self._json({"restarting": want})
         if path == "/pet":
             threading.Thread(target=speak, args=(self.speaker_port, scratch()),
                              daemon=True).start()
@@ -352,6 +365,7 @@ class Console(BaseHTTPRequestHandler):
             "tof": tof.get("distance_mm"),
             "tof_status": tof.get("status"),
             "peers": hears.get("peers", []),
+            "mode": (self.robot.call("robot.mode") or {}).get("mode"),
             "mic_dbfs": round(self.ear.dbfs, 1),
             "mic_peak": round(self.ear.peak, 1),
             "health": health,

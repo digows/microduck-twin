@@ -113,8 +113,11 @@
       <button id="speak">hold to speak</button>
       <button id="pet">scratch its head</button>
       <button id="push">shove it</button>
+      <button id="roller">put it on wheels</button>
     </div>
-    <p class="note">Speaking puts your microphone into the room at this duck's head, so
+    <p class="note">Wheels are another robot and another MuJoCo model, so that button is a
+      bring-up rather than a switch: the page goes quiet for a few seconds and comes back.
+      Speaking puts your microphone into the room at this duck's head, so
       distance and walls apply to you too. Scratching is broadband noise on the head, which
       is what `pet-detect` is classifying — it decides for itself whether that was petting.</p>
   </section>
@@ -180,6 +183,12 @@ document.querySelectorAll('[data-do]').forEach((button) => {
 $('push').onclick = () => post('/push', { vx: 0.7, vy: 0.2 });
 $('pet').onclick = () => post('/pet');
 
+let mode = 'walk';
+$('roller').onclick = () => {
+  $('status').textContent = 'changing the robot under the duck';
+  post('/roller', { on: mode !== 'roller' });
+};
+
 // ── speaking into the room ──────────────────────────────────────────────────
 // The browser captures at whatever the device runs at; the field carries 48 kHz mono, and
 // an AudioContext asked for that rate resamples on the way in so nothing here has to.
@@ -244,6 +253,11 @@ async function poll() {
     $('pulse').className = 'dot live';
     $('status').textContent = 'live';
     $('clock').textContent = s.sim_time ? `sim ${s.sim_time.toFixed(1)} s` : '';
+    if (s.mode) {
+      mode = s.mode;
+      $('roller').textContent = mode === 'roller' ? 'take the wheels off' : 'put it on wheels';
+      $('roller').classList.toggle('on', mode === 'roller');
+    }
 
     const loop = s.health && s.health.loop;
     $('loop').textContent = loop ? `${(loop.hz ?? 0).toFixed(1)} of 50 Hz · ${loop.missed ?? 0} missed`

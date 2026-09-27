@@ -26,7 +26,20 @@ FRAME_PORT="${TWIN_FRAME_PORT:-7901}"
 # Duck i speaks on AUDIO_PORT + 2i and hears on the odd port beside it.
 AUDIO_PORT="${TWIN_AUDIO_PORT:-7951}"
 CONSOLE_PORT="${TWIN_CONSOLE_PORT:-8090}"
-SCENE="${TWIN_SCENE:-apartment}"
+# Walk or roller, remembered across commands so `roller on` survives the `up` it triggers.
+# The daemon resolves every unset tuning field per mode, so nothing here is pinned but the
+# policies and the body: a roller robot is one line on a robot and should be one here.
+MODE="${TWIN_MODE:-$( [ -f "${TWIN_STATE:-$HERE/state}/mode" ] &&
+    cat "${TWIN_STATE:-$HERE/state}/mode" || echo walk )}"
+
+# The wheels are under a different robot, so they are a different MJCF — MuJoCo compiles its
+# model and cannot grow them. `scene_rollers.xml` is a bare floor rather than the flat; a
+# duck on wheels in a six-room apartment is a duck in a doorway.
+if [ "$MODE" = roller ]; then
+    SCENE="${TWIN_SCENE:-rollers}"
+else
+    SCENE="${TWIN_SCENE:-apartment}"
+fi
 KEYFRAME="${TWIN_KEYFRAME:-SIT}"
 CAMERAS="${TWIN_CAMERAS:-}"
 # On, because a twin you cannot watch is a log file. `TWIN_VIEWER=0` for a headless run —
@@ -182,7 +195,30 @@ policies() {
 
 params() {
     name=$1
-    cat > "$STATE/robotd-$name.toml" <<TOML
+    # The two sets the daemon itself distinguishes, named here because RELEASE_DIR is
+    # /opt/robot/daemon/current, which exists on a robot and not here. On wheels there is
+    # no standing policy — the daemon loads one in roller mode and then skips every
+    # standing transition, so not loading it is the same robot without the dead session —
+    # and the ground-pick slot holds the crouch instead.
+    if [ "$MODE" = roller ]; then
+        cat > "$STATE/robotd-$name.toml" <<TOML
+# Written by microduck-twin.
+[policy]
+enabled = true
+mode = "roller"
+walk = "$POLICIES/roller.onnx"
+sitstand = "$POLICIES/alpha_sitstand.onnx"
+ground_pick = "$POLICIES/roller_crouch.onnx"
+# A duck on wheels does not kick a ball or roll over its head, and the slots do not go away
+# on their own: left unnamed they resolve into the release directory, which exists on a
+# robot and not here, and the duck comes up *unhealthy* over a file nobody asked for.
+# "none" is the daemon's own word for a slot that is not fitted.
+kick_left = "none"
+kick_right = "none"
+roulade = "none"
+TOML
+    else
+        cat > "$STATE/robotd-$name.toml" <<TOML
 # Written by microduck-twin. Every policy is named explicitly because RELEASE_DIR is
 # /opt/robot/daemon/current, which exists on a robot and not here.
 [policy]
@@ -194,6 +230,10 @@ ground_pick = "$POLICIES/alpha_ground_pick.onnx"
 kick_left = "$POLICIES/ball_kick_left.onnx"
 kick_right = "$POLICIES/ball_kick_right.onnx"
 roulade = "$POLICIES/roulade.onnx"
+TOML
+    fi
+
+    cat >> "$STATE/robotd-$name.toml" <<TOML
 
 # A room of ducks that will not sing together is a poor demonstration of a room of ducks.
 [chorale]
@@ -214,6 +254,27 @@ pet_model = "$MICRODUCK/pet-detect/models/pet_detect.onnx"
 [theremin]
 socket = "$STATE/$name-tof.sock"
 TOML
+}
+
+# **Wheels are a restart, not a switch.** On a robot `policy.mode` is one line and the
+# daemon loads another set; here the body is another MJCF as well, and MuJoCo compiles its
+# model — so the world goes away and comes back. The daemons live through that by design:
+# `RemoteIo` reconnects on the next tick and a duck whose body is briefly gone reports
+# unhealthy rather than dying, exactly as a robot with no power on the bus does.
+roller() {
+    want=${1:-}
+    case "$want" in
+        on|roller)  new=roller ;;
+        off|walk)   new=walk ;;
+        ""|status)  echo "$MODE"; return 0 ;;
+        *)          die "roller takes on, off or status — not $want" ;;
+    esac
+    mkdir -p "$STATE"
+    printf '%s\n' "$new" > "$STATE/mode"
+    say "wheels ${want}: bringing the twin back up in $new mode"
+    MODE=$new
+    [ "$new" = roller ] && SCENE="${TWIN_SCENE:-rollers}" || SCENE="${TWIN_SCENE:-apartment}"
+    up
 }
 
 voice() {
@@ -590,6 +651,15 @@ tests() {
     else
         warn "no second duck up — \`TWIN_DUCKS=2 ./microduck-twin up\` for the hearing test"
     fi
+    echo
+
+    # Two bring-ups, about a minute, and it leaves the twin in walk mode. Opt in, because a
+    # suite worth running before every commit is one nobody waits for.
+    if [ "${TWIN_TEST_ROLLER:-0}" = 1 ]; then
+        "$HERE/tests/roller.sh"
+    else
+        warn "wheels not tested — \`TWIN_TEST_ROLLER=1 ./microduck-twin test\` (about a minute)"
+    fi
 }
 
 # What a duck hears, on your own speakers. This is the honest monitor: not a tap on the
@@ -639,9 +709,11 @@ microduck-twin — a complete Microduck, on a machine that is not one.
   realtime      how fast the world runs against the clock
   listen [DUCK] play what a duck's microphone hears
   console       print the console's address, and open it where that is possible
+  roller on|off put the duck on wheels, or take it off
 
 Environment: TWIN_STATE TWIN_DUCKS TWIN_PORT TWIN_SCENE TWIN_KEYFRAME
-             TWIN_CAMERAS TWIN_VIEWER TWIN_DUCK TWIN_MICRODUCK TWIN_MICRODUCK_RL
+             TWIN_CAMERAS TWIN_VIEWER TWIN_DUCK TWIN_MODE TWIN_CONSOLE_PORT
+             TWIN_AUDIO_PORT TWIN_MICRODUCK TWIN_MICRODUCK_RL
 TEXT
 }
 
@@ -659,6 +731,7 @@ case "$cmd" in
     realtime) realtime_factor ;;
     listen)  listen "${1:-$DUCK}" ;;
     console) console ;;
+    roller)  roller "${1:-status}" ;;
     -h|--help|help) usage ;;
     *)       usage; exit 1 ;;
 esac

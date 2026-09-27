@@ -32,7 +32,7 @@ This project is the device that is missing.
 | **Battery and thermals** — they move with what the robot is doing | **works** |
 | **Ear** — the head microphone as a sensor of the simulated world | **works** |
 | **Console** — the duck from above, knobs, every sensor, speak to it | **works** |
-| **Rollers from the console** — wheels on, wheels off | planned |
+| **Rollers** — wheels on, wheels off, from the page or the command line | **works** |
 
 ## Why this is not the forty-first Microduck simulator
 
@@ -130,7 +130,10 @@ And it acts *on* the duck rather than only with it. Holding **speak** puts your 
 the room at that duck's head, so distance and walls apply to you as they do to a duck.
 **Scratch its head** is broadband noise where the Mic3R is, and the real `pet-detect` decides for
 itself whether that was petting. **Shove it** is the training push, capped at the metre a second
-the standing policy was trained to survive.
+the standing policy was trained to survive. **Wheels** is a bring-up rather than a switch: the
+daemon distinguishes the two policy sets itself, and on this side the wheels are a different
+robot in a different MJCF, which MuJoCo compiles — so the world goes away and comes back, and
+the daemons live through it the way they live through any body that briefly is not there.
 
 ## What this is not
 

@@ -25,6 +25,7 @@ PORT="${TWIN_PORT:-7801}"
 FRAME_PORT="${TWIN_FRAME_PORT:-7901}"
 # Duck i speaks on AUDIO_PORT + 2i and hears on the odd port beside it.
 AUDIO_PORT="${TWIN_AUDIO_PORT:-7951}"
+CONSOLE_PORT="${TWIN_CONSOLE_PORT:-8090}"
 SCENE="${TWIN_SCENE:-apartment}"
 KEYFRAME="${TWIN_KEYFRAME:-SIT}"
 CAMERAS="${TWIN_CAMERAS:-}"
@@ -445,6 +446,20 @@ TOML
 # flag, so it is the one subcommand that has to be told which duck's params to open. Left
 # alone it reads /etc/robot/robotd.toml, which is right on a robot and absent here — and the
 # answer then is "changes nothing", about a file nobody has.
+# Last, because it holds a connection to everything else. Python from the simulator's venv:
+# it is already there, it is the interpreter the body runs, and the console needs nothing
+# the body does not already have.
+start_console() {
+    say "console: http://127.0.0.1:$CONSOLE_PORT"
+    spawn console "server.py --port $CONSOLE_PORT" \
+        "$MICRODUCK_RL/.venv/bin/python" "$HERE/twin-console/server.py" \
+        --port "$CONSOLE_PORT" --robot-socket "$STATE/$(duck_name 0).sock" \
+        --config-socket "$STATE/$(duck_name 0)-config.sock" \
+        --updater-socket "$STATE/$(duck_name 0)-updater.sock" \
+        --tof-socket "$STATE/$(duck_name 0)-tof.sock" \
+        --body-port "$PORT" --audio-port "$AUDIO_PORT" --duck-index 0
+}
+
 ctl() {
     name="$DUCK"
     if [ "${1:-}" = configure ]; then
@@ -488,6 +503,7 @@ up() {
     start_body
     start_field
     start_daemons
+    start_console
     stand
     echo
     ctl health 2>/dev/null | head -3 || true
@@ -500,6 +516,7 @@ up() {
     ./microduck-twin ctl quack        its own voice, from its own serial
     ./microduck-twin ctl health       or anything else robotctl does
     ./microduck-twin ctl robot do roulade
+    ./microduck-twin console          the duck from above, the knobs, every sensor
     ./microduck-twin listen           hear what duck-a hears, room and all
     ./microduck-twin status           what is still running
     ./microduck-twin log              what the daemon is saying
@@ -591,6 +608,16 @@ listen() {
         -f s16le -ar 16000 -ch_layout mono -i "tcp://127.0.0.1:$port"
 }
 
+console() {
+    url="http://127.0.0.1:$CONSOLE_PORT"
+    echo "$url"
+    # `open` is macOS and `xdg-open` is the rest; neither existing is not a failure, the
+    # address above is the answer either way.
+    if have open; then open "$url" >/dev/null 2>&1 || true
+    elif have xdg-open; then xdg-open "$url" >/dev/null 2>&1 || true
+    fi
+}
+
 where() {
     echo "$STATE"
     [ -d "$STATE" ] || { echo "  (nothing yet — run \`up\`)"; return 0; }
@@ -611,6 +638,7 @@ microduck-twin — a complete Microduck, on a machine that is not one.
   test          the codec's contract, and the geometry the field reads
   realtime      how fast the world runs against the clock
   listen [DUCK] play what a duck's microphone hears
+  console       print the console's address, and open it where that is possible
 
 Environment: TWIN_STATE TWIN_DUCKS TWIN_PORT TWIN_SCENE TWIN_KEYFRAME
              TWIN_CAMERAS TWIN_VIEWER TWIN_DUCK TWIN_MICRODUCK TWIN_MICRODUCK_RL
@@ -630,6 +658,7 @@ case "$cmd" in
     test)    tests ;;
     realtime) realtime_factor ;;
     listen)  listen "${1:-$DUCK}" ;;
+    console) console ;;
     -h|--help|help) usage ;;
     *)       usage; exit 1 ;;
 esac

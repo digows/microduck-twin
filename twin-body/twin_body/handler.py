@@ -30,9 +30,57 @@ MARGIN_M = 0.08
 
 class TwinHandler(Handler):
     def dispatch(self, body, request: dict) -> dict:
-        if request.get("op") == "hears":
+        op = request.get("op")
+        if op == "hears":
             return self.hears(body)
+        if op == "view":
+            return self.view(body, request)
+        if op == "push":
+            return self.push(body, request)
         return super().dispatch(body, request)
+
+    def view(self, body, request: dict) -> dict:
+        """One rendered frame of the world, centred on this duck."""
+        from twin_body import view
+
+        with body.world.lock:
+            at = [float(v) for v in body.world.data.qpos[body.trunk : body.trunk + 3]]
+        at[2] = max(at[2], 0.12)
+
+        jpeg = view.frame(
+            body.world,
+            at,
+            width=int(request.get("width", 480)),
+            height=int(request.get("height", 360)),
+            # Looking down, because the apartment has 1.6 m walls and a camera at eye
+            # level lands inside one: the first frame this produced was a close-up of
+            # plaster. From 2.2 m at 55 degrees the view clears them and sees the room.
+            distance=float(request.get("distance", 2.2)),
+            azimuth=float(request.get("azimuth", 130.0)),
+            elevation=float(request.get("elevation", -55.0)),
+            quality=int(request.get("quality", 70)),
+        )
+        return {"jpeg": jpeg, "at": at}
+
+    def push(self, body, request: dict) -> dict:
+        """Shove the trunk, the way the training event does.
+
+        Overwrites the world-frame linear velocity rather than adding to it, so holding the
+        button does not accumulate into a launch. A metre a second is the cap the velstand
+        push curriculum ends at, which is what the standing policy was trained to survive.
+        """
+        import numpy as np
+
+        vx = float(request.get("vx", 0.0))
+        vy = float(request.get("vy", 0.0))
+        speed = float(np.hypot(vx, vy))
+        if speed > 1.0:
+            vx, vy = vx / speed, vy / speed
+
+        with body.world.lock:
+            body.world.data.qvel[body.trunk_dof + 0] = vx
+            body.world.data.qvel[body.trunk_dof + 1] = vy
+        return {"vx": vx, "vy": vy}
 
     def hears(self, body) -> dict:
         world = body.world

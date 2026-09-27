@@ -1,0 +1,303 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>microduck-twin</title>
+<style>
+  :root {
+    --bg: #14151a; --panel: #1c1e26; --line: #2a2d38; --ink: #e6e8ef;
+    --dim: #8b90a0; --live: #4ade80; --warn: #fbbf24; --bad: #f87171; --duck: #fb923c;
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); }
+  header { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex;
+           gap: 14px; align-items: baseline; flex-wrap: wrap; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .01em; }
+  .sub { color: var(--dim); font-size: 12px; }
+  main { display: grid; gap: 14px; padding: 14px 16px;
+         grid-template-columns: minmax(320px, 1.4fr) minmax(280px, 1fr); }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+           padding: 12px; }
+  .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+              color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+  #view { width: 100%; border-radius: 8px; display: block; background: #0d0e12;
+          aspect-ratio: 4 / 3; object-fit: cover; }
+  .pads { display: flex; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+  .pad { width: 128px; height: 128px; border-radius: 50%; border: 1px solid var(--line);
+         background: radial-gradient(circle at 50% 50%, #23262f 0%, #191b22 70%);
+         position: relative; touch-action: none; cursor: grab; flex: none; }
+  .pad .knob { position: absolute; width: 38px; height: 38px; border-radius: 50%;
+               background: var(--duck); left: 45px; top: 45px; pointer-events: none;
+               box-shadow: 0 2px 10px #0008; }
+  .pad .label { position: absolute; bottom: -19px; width: 100%; text-align: center;
+                font-size: 11px; color: var(--dim); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 26px; }
+  button { background: #262932; color: var(--ink); border: 1px solid var(--line);
+           border-radius: 7px; padding: 7px 11px; font-size: 12px; cursor: pointer;
+           font-family: inherit; }
+  button:hover { background: #303542; }
+  button:active { transform: translateY(1px); }
+  button.on { background: var(--duck); color: #1a1205; border-color: var(--duck); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 0;
+       font-size: 12px; align-items: baseline; }
+  dt { color: var(--dim); }
+  dd { margin: 0; font-variant-numeric: tabular-nums; }
+  #tof { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; margin-top: 4px; }
+  #tof div { aspect-ratio: 1; border-radius: 2px; background: #22252e; }
+  .meter { height: 9px; background: #22252e; border-radius: 5px; overflow: hidden;
+           margin-top: 5px; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--live);
+             transition: width .08s linear; }
+  #joints { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; margin-top: 4px; }
+  #joints div { height: 22px; background: #22252e; border-radius: 3px; position: relative;
+                font-size: 9px; color: var(--dim); overflow: hidden; }
+  #joints i { position: absolute; left: 50%; top: 0; bottom: 0; background: var(--duck);
+              opacity: .8; }
+  #joints span { position: absolute; left: 3px; top: 5px; }
+  .note { color: var(--dim); font-size: 11px; margin-top: 8px; line-height: 1.5; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+         background: var(--dim); margin-right: 5px; vertical-align: 1px; }
+  .dot.live { background: var(--live); }
+  .dot.bad { background: var(--bad); }
+</style>
+
+<header>
+  <h1>microduck-twin</h1>
+  <span class="sub"><span class="dot" id="pulse"></span><span id="status">connecting</span></span>
+  <span class="sub" id="clock"></span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>The room</h2>
+    <img id="view" alt="the duck, from above">
+    <div class="pads">
+      <div class="pad" id="pad-move"><div class="knob"></div><div class="label">walk</div></div>
+      <div class="pad" id="pad-look"><div class="knob"></div><div class="label">look</div></div>
+      <div class="row">
+        <button data-do="sit_toggle">sit / stand</button>
+        <button data-do="roulade">roulade</button>
+        <button data-do="ground_pick">ground pick</button>
+        <button data-do="kick_left">kick L</button>
+        <button data-do="kick_right">kick R</button>
+      </div>
+    </div>
+    <p class="note">The knobs spring back and the commands expire on their own — `robotd`'s
+      deadman zeroes the velocity after 500 ms, exactly as it does on the robot.</p>
+  </section>
+
+  <section class="panel">
+    <h2>What it is doing to itself</h2>
+    <dl>
+      <dt>loop</dt><dd id="loop">—</dd>
+      <dt>battery</dt><dd id="volts">—</dd>
+      <dt>motors</dt><dd id="temps">—</dd>
+      <dt>trunk</dt><dd id="trunk">—</dd>
+      <dt>gravity</dt><dd id="gravity">—</dd>
+      <dt>neighbours</dt><dd id="peers">—</dd>
+    </dl>
+
+    <h2 style="margin-top:16px">Joints</h2>
+    <div id="joints"></div>
+
+    <h2 style="margin-top:16px">Depth, 8×8</h2>
+    <div id="tof"></div>
+
+    <h2 style="margin-top:16px">Ear</h2>
+    <div class="meter"><i id="mic"></i></div>
+    <dl style="margin-top:6px"><dt>level</dt><dd id="mic-db">—</dd></dl>
+
+    <h2 style="margin-top:16px">Things you can do to a duck</h2>
+    <div class="row" style="margin-top:0">
+      <button id="speak">hold to speak</button>
+      <button id="pet">scratch its head</button>
+      <button id="push">shove it</button>
+    </div>
+    <p class="note">Speaking puts your microphone into the room at this duck's head, so
+      distance and walls apply to you too. Scratching is broadband noise on the head, which
+      is what `pet-detect` is classifying — it decides for itself whether that was petting.</p>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const post = (path, body) =>
+  fetch(path, { method: 'POST', body: JSON.stringify(body || {}) }).then(r => r.json());
+
+// ── the room ────────────────────────────────────────────────────────────────
+// One frame at a time, asked for rather than pushed: a render costs about 20 ms in the
+// body, and a console that asked faster than that would queue stale pictures.
+let viewing = false;
+function nextFrame() {
+  if (viewing) return;
+  viewing = true;
+  const img = $('view');
+  const next = new Image();
+  next.onload = () => { img.src = next.src; viewing = false; };
+  next.onerror = () => { viewing = false; };
+  next.src = `/view?width=640&height=480&t=${Date.now()}`;
+}
+setInterval(nextFrame, 120);
+
+// ── the knobs ───────────────────────────────────────────────────────────────
+// Each returns to centre when let go, and nothing is sent from the middle: an intent that
+// stops arriving is how the robot is told to stop, and the deadman does the rest.
+function makePad(el, onMove) {
+  const knob = el.querySelector('.knob');
+  let active = null, x = 0, y = 0;
+  const place = () => {
+    knob.style.left = `${45 + x * 45}px`;
+    knob.style.top = `${45 + y * 45}px`;
+  };
+  const set = (event) => {
+    const box = el.getBoundingClientRect();
+    let dx = (event.clientX - box.left - box.width / 2) / (box.width / 2);
+    let dy = (event.clientY - box.top - box.height / 2) / (box.height / 2);
+    const far = Math.hypot(dx, dy);
+    if (far > 1) { dx /= far; dy /= far; }
+    x = dx; y = dy; place();
+  };
+  el.addEventListener('pointerdown', (e) => {
+    active = e.pointerId; el.setPointerCapture(active); set(e);
+  });
+  el.addEventListener('pointermove', (e) => { if (active === e.pointerId) set(e); });
+  const release = () => { active = null; x = 0; y = 0; place(); };
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', release);
+  setInterval(() => { if (x || y) onMove(x, y); }, 100);
+}
+
+// Up is forward and left is left, which is what a hand expects and the opposite of the
+// screen's y.
+makePad($('pad-move'), (x, y) => post('/move', { vx: -y * 0.3, vy: -x * 0.2, vyaw: 0 }));
+makePad($('pad-look'), (x, y) =>
+  post('/look', { x: 1.0, y: -x * 0.6, z: -y * 0.4 }));
+
+document.querySelectorAll('[data-do]').forEach((button) => {
+  button.onclick = () => post('/do', { name: button.dataset.do });
+});
+$('push').onclick = () => post('/push', { vx: 0.7, vy: 0.2 });
+$('pet').onclick = () => post('/pet');
+
+// ── speaking into the room ──────────────────────────────────────────────────
+// The browser captures at whatever the device runs at; the field carries 48 kHz mono, and
+// an AudioContext asked for that rate resamples on the way in so nothing here has to.
+let speaking = null;
+$('speak').onpointerdown = async () => {
+  if (speaking) return;
+  $('speak').classList.add('on');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const context = new AudioContext({ sampleRate: 48000 });
+    const source = context.createMediaStreamSource(stream);
+    const node = context.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = (event) => {
+      const floats = event.inputBuffer.getChannelData(0);
+      const pcm = new Int16Array(floats.length);
+      for (let i = 0; i < floats.length; i++) {
+        pcm[i] = Math.max(-1, Math.min(1, floats[i])) * 32767;
+      }
+      const bytes = new Uint8Array(pcm.buffer);
+      let binary = '';
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      post('/say', { pcm: btoa(binary) });
+    };
+    source.connect(node);
+    node.connect(context.destination);
+    speaking = { stream, context, node };
+  } catch (error) {
+    $('status').textContent = `no microphone: ${error.message}`;
+    $('speak').classList.remove('on');
+  }
+};
+const stopSpeaking = () => {
+  if (!speaking) return;
+  speaking.node.disconnect();
+  speaking.stream.getTracks().forEach((t) => t.stop());
+  speaking.context.close();
+  speaking = null;
+  $('speak').classList.remove('on');
+};
+$('speak').onpointerup = stopSpeaking;
+$('speak').onpointerleave = stopSpeaking;
+
+// ── what it is doing ────────────────────────────────────────────────────────
+const JOINTS = ['hip yaw', 'hip roll', 'hip pitch', 'knee', 'ankle',
+                'neck', 'head pitch', 'head yaw', 'head roll', 'mouth',
+                'hip yaw', 'hip roll', 'hip pitch', 'knee', 'ankle'];
+const jointCells = JOINTS.map((name) => {
+  const cell = document.createElement('div');
+  cell.innerHTML = `<i></i><span>${name}</span>`;
+  $('joints').append(cell);
+  return cell.querySelector('i');
+});
+const tofCells = Array.from({ length: 64 }, () => {
+  const cell = document.createElement('div');
+  $('tof').append(cell);
+  return cell;
+});
+
+async function poll() {
+  try {
+    const s = await fetch('/state').then((r) => r.json());
+    $('pulse').className = 'dot live';
+    $('status').textContent = 'live';
+    $('clock').textContent = s.sim_time ? `sim ${s.sim_time.toFixed(1)} s` : '';
+
+    const loop = s.health && s.health.loop;
+    $('loop').textContent = loop ? `${(loop.hz ?? 0).toFixed(1)} of 50 Hz · ${loop.missed ?? 0} missed`
+                                 : '—';
+    if (s.volts != null) {
+      const pct = Math.max(0, Math.min(100, (s.volts - 6.6) / 1.6 * 100));
+      $('volts').textContent = `${s.volts.toFixed(2)} V · ${pct.toFixed(0)}%`;
+      $('volts').style.color = pct < 15 ? 'var(--bad)' : pct < 35 ? 'var(--warn)' : '';
+    }
+    if (s.temps_c) {
+      const hot = Math.max(...s.temps_c);
+      $('temps').textContent = `${hot.toFixed(0)} °C hottest · ${
+        (s.temps_c.reduce((a, b) => a + b, 0) / s.temps_c.length).toFixed(0)} °C mean`;
+      $('temps').style.color = hot > 70 ? 'var(--bad)' : hot > 55 ? 'var(--warn)' : '';
+    }
+    if (s.trunk) {
+      $('trunk').textContent = `${s.trunk.map((v) => v.toFixed(2)).join(', ')} m`;
+    }
+    if (s.imu && s.imu.gravity) {
+      $('gravity').textContent = s.imu.gravity.map((v) => v.toFixed(2)).join(', ');
+    }
+    $('peers').textContent = (s.peers || []).length
+      ? s.peers.map((p) => `duck-${String.fromCharCode(97 + p.index)} at ${
+          p.distance.toFixed(2)} m${p.blocked ? ' (walled)' : ''}`).join(', ')
+      : 'alone in the flat';
+
+    if (s.positions) {
+      s.positions.forEach((angle, i) => {
+        if (!jointCells[i]) return;
+        const span = Math.max(-1, Math.min(1, angle / 1.6));
+        jointCells[i].style.left = span < 0 ? `${50 + span * 50}%` : '50%';
+        jointCells[i].style.width = `${Math.abs(span) * 50}%`;
+      });
+    }
+    if (s.tof) {
+      s.tof.forEach((mm, i) => {
+        if (!tofCells[i]) return;
+        const near = mm > 0 ? Math.max(0, 1 - mm / 2500) : 0;
+        tofCells[i].style.background = mm > 0
+          ? `hsl(${200 - near * 180} 70% ${18 + near * 38}%)` : '#22252e';
+      });
+    }
+    if (s.mic_dbfs != null) {
+      const level = Math.max(0, Math.min(100, (s.mic_dbfs + 60) / 60 * 100));
+      $('mic').style.width = `${level}%`;
+      $('mic').style.background = level > 70 ? 'var(--duck)' : 'var(--live)';
+      $('mic-db').textContent = s.mic_dbfs <= -119 ? 'silent'
+                                                   : `${s.mic_dbfs.toFixed(0)} dBFS`;
+    }
+  } catch (error) {
+    $('pulse').className = 'dot bad';
+    $('status').textContent = 'the twin is not answering';
+  }
+}
+poll();
+setInterval(poll, 500);
+</script>

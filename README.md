@@ -31,7 +31,8 @@ This project is the device that is missing.
 | **Voice** — the duck is audible on a machine with no ALSA | **works** |
 | **Battery and thermals** — they move with what the robot is doing | **works** |
 | **Ear** — the head microphone as a sensor of the simulated world | **works** |
-| **Console** — the duck in 3D, knobs, every sensor, rollers | in progress |
+| **Console** — the duck from above, knobs, every sensor, speak to it | **works** |
+| **Rollers from the console** — wheels on, wheels off | planned |
 
 ## Why this is not the forty-first Microduck simulator
 
@@ -108,6 +109,28 @@ A duck hears its own speaker, because a real microphone on the same head does.
 against this unmodified, forking the `arecord` it always forks, reading the 16 kHz mono it always
 reads. `./microduck-twin listen` plays what an ear receives, which is the honest monitor: not a
 tap on the speaker wire but the room as that duck hears it.
+
+### The console
+
+`./microduck-twin console` serves a page at `127.0.0.1:8090` that is a superset of the one a
+robot serves — which keeps running beside it, untouched, for anyone who wants the real thing.
+
+It shows the duck from above, rendered by MuJoCo rather than rebuilt in the browser: parsing the
+MJCF for a body tree and loading eighty-six meshes would be a project of its own, and what it
+produced would be a reconstruction. This is the geometry being stepped, with the room around it.
+About 20 ms a frame at 480×360, asked for rather than pushed.
+
+Two knobs drive `robot.move` and `robot.look`, the skills are buttons, and every sensor is on the
+page: joints, the trunk IMU, the 8×8 depth grid, the battery falling, the servos warming, and the
+ear's level. It speaks JSON-RPC 2.0 over each daemon's own socket and routes by namespace, because
+there is no broker — `robotd` refuses `system.info` on the grounds that the robot's identity is
+`configd`'s.
+
+And it acts *on* the duck rather than only with it. Holding **speak** puts your microphone into
+the room at that duck's head, so distance and walls apply to you as they do to a duck.
+**Scratch its head** is broadband noise where the Mic3R is, and the real `pet-detect` decides for
+itself whether that was petting. **Shove it** is the training push, capped at the metre a second
+the standing policy was trained to survive.
 
 ## What this is not
 

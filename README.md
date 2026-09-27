@@ -30,8 +30,8 @@ This project is the device that is missing.
 | **One command** — `./microduck-twin up`, pinned upstreams, nothing to remember | **works** |
 | **Voice** — the duck is audible on a machine with no ALSA | **works** |
 | **Battery and thermals** — they move with what the robot is doing | **works** |
-| **Ear** — the head microphone as a sensor of the simulated world | in progress |
-| **Console** — the duck in 3D, knobs, every sensor, rollers | planned |
+| **Ear** — the head microphone as a sensor of the simulated world | **works** |
+| **Console** — the duck in 3D, knobs, every sensor, rollers | in progress |
 
 ## Why this is not the forty-first Microduck simulator
 
@@ -83,12 +83,31 @@ and whether anything is in the way. One round trip per audio tick rather than on
 the ray casting kept where the model is. It is additive, so a simulator that predates it answers
 `unknown op` and the field falls back to distance without direction.
 
-Behind them sits the sound field: one process holding a connection per duck, in the shape
+### The air
+
+Behind the codec sits `duck-audio`: one process holding a connection per duck, in the shape
 [`duck-ether`](https://github.com/pollen-robotics/microduck/blob/main/duck-ether/src/main.rs)
-already established for the fake BLE radio — geometry polled from the body over TCP, and physics
-derived from the distance between two of them. Attenuation, delay at the speed of sound, and
-occlusion by line of sight. Deliberately imperfect, and seeded, for the reason Pollen gives for
-their radio: a perfect channel hides the bugs a real one causes.
+already established for the fake BLE radio — geometry polled from the body over TCP, physics
+derived from the distance between two of them. Duck *i* speaks on `audio-port + 2i` and hears on
+the odd port beside it, raw S16_LE mono, 48 kHz in and 16 kHz out, because those are the rates
+the software asks for.
+
+Three effects, each for a reason Pollen already argued for the radio — a channel that is perfect
+hides the bugs a real one causes:
+
+- **Distance.** 1/r past a reference radius, so two ducks a room apart do not hear each other the
+  way two beak to beak do.
+- **Delay.** 343 m/s. Across a seven-metre flat that is 20 ms — a third of a control tick, and
+  exactly the size a synchroniser gets wrong.
+- **Occlusion.** A wall is about 18 dB, not a mute button, so a detector tuned on the open-room
+  level has something to fail against.
+
+A duck hears its own speaker, because a real microphone on the same head does.
+
+`pet-detect` — the ~20 KB CNN that classifies head-petting from 40-band log-mel windows — runs
+against this unmodified, forking the `arecord` it always forks, reading the 16 kHz mono it always
+reads. `./microduck-twin listen` plays what an ear receives, which is the honest monitor: not a
+tap on the speaker wire but the room as that duck hears it.
 
 ## What this is not
 

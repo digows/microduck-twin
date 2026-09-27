@@ -23,6 +23,8 @@ STATE="${TWIN_STATE:-$HERE/state}"
 DUCKS="${TWIN_DUCKS:-1}"
 PORT="${TWIN_PORT:-7801}"
 FRAME_PORT="${TWIN_FRAME_PORT:-7901}"
+# Duck i speaks on AUDIO_PORT + 2i and hears on the odd port beside it.
+AUDIO_PORT="${TWIN_AUDIO_PORT:-7951}"
 SCENE="${TWIN_SCENE:-apartment}"
 KEYFRAME="${TWIN_KEYFRAME:-SIT}"
 CAMERAS="${TWIN_CAMERAS:-}"
@@ -151,6 +153,19 @@ daemons() {
         -p robotd -p robotctl -p tof -p sounds -p configd -p updater)
 }
 
+# The air. Built into the state directory rather than beside the source, so the clone stays
+# clean and `where` accounts for every byte.
+field_bin() { echo "$STATE/cargo/release/$1"; }
+
+# **Always cargo, never a file check.** An `[ -x ]` that skips the build is a binary that
+# outlives the source it came from: a constant was corrected here, the check saw the old
+# binary in place and ran it anyway, and the test that caught it looked like a bad test.
+# Cargo already knows whether anything changed, and takes under a second when nothing has.
+field_build() {
+    say "field: building"
+    (cd "$HERE/duck-audio" && CARGO_TARGET_DIR="$STATE/cargo" cargo build --release --quiet)
+}
+
 # A checkout has no policies: they live on the Hub and reach a robot at install time. A duck
 # started against seven missing files comes up degraded and never stands.
 policies() {
@@ -189,6 +204,11 @@ bank = "$STATE/sounds/$name"
 # AudioParams::capture_device appends ,0 for arecord. "default" rather than the board's
 # plughw:aic3104 so the codec on PATH is reached instead of a card that is not here.
 device = "default"
+# Petting detection is opt-in on a robot because it cooed at every incidental head scratch.
+# Here it is the point: it is the one consumer of the microphone that ships, and a field
+# nothing listens to proves nothing. The model is vendored in the daemon checkout.
+pet_detect = true
+pet_model = "$MICRODUCK/pet-detect/models/pet_detect.onnx"
 
 [theremin]
 socket = "$STATE/$name-tof.sock"
@@ -335,6 +355,7 @@ start_body() {
     [ -n "$CAMERAS" ] && cams="--cameras $CAMERAS --frame-port $FRAME_PORT --camera-fps 30"
 
     say "body: starting $DUCKS duck(s) in $SCENE"
+
     # `twin_body` rather than `mjlab_microduck.sim.body_server`: it imports that module,
     # rebinds the two class names its `main()` looks up, and runs it. Every argument below
     # is the body server's own. PYTHONPATH rather than an install, so the simulator's venv
@@ -344,6 +365,15 @@ start_body() {
         spawn body "twin_body --port $PORT" "$py" -m twin_body \
         --port "$PORT" --ducks "$DUCKS" --keyframe "$KEYFRAME" $headless $scene_arg $cams
     wait_for_port "$PORT" || die "the body never opened $PORT. $STATE/body.log has why."
+}
+
+# After the body, because the field asks it where every ear is; before the daemons, because
+# the first thing `robotd` does is quack.
+start_field() {
+    say "field: the air for $DUCKS duck(s) on $AUDIO_PORT"
+    spawn field "duck-audio --ducks $DUCKS" "$(field_bin duck-audio)" \
+        --ducks "$DUCKS" --body-port "$PORT" --audio-port "$AUDIO_PORT"
+    wait_for_port "$AUDIO_PORT" || die "the field never opened $AUDIO_PORT. $STATE/field.log has why."
 }
 
 start_daemons() {
@@ -392,8 +422,10 @@ TOML
             --config "$STATE/updater-$name.toml" --socket "$STATE/$name-updater.sock" \
             --token "$STATE/$name/hf-token"
 
+        # `TWIN_AUDIO_PORT` and `DUCK_IDENTITY` are what the codec reads: which room this
+        # duck speaks into, and which ear is its own. Nothing on a robot sets either.
         DUCK_IDENTITY="$name" DUCK_RUNTIME_DIR="$STATE" ORT_DYLIB_PATH="$ORT" \
-            RUST_LOG="${RUST_LOG:-info}" \
+            TWIN_AUDIO_PORT="$AUDIO_PORT" RUST_LOG="${RUST_LOG:-info}" \
             spawn "$name" "$STATE/$name.sock" "$bin/robotd" --sim "127.0.0.1:$port" \
             --params "$STATE/robotd-$name.toml" --socket "$STATE/$name.sock"
 
@@ -449,10 +481,12 @@ up() {
     sources
     venv
     daemons
+    field_build
     policies
     down
     mkdir -p "$STATE"
     start_body
+    start_field
     start_daemons
     stand
     echo
@@ -466,6 +500,7 @@ up() {
     ./microduck-twin ctl quack        its own voice, from its own serial
     ./microduck-twin ctl health       or anything else robotctl does
     ./microduck-twin ctl robot do roulade
+    ./microduck-twin listen           hear what duck-a hears, room and all
     ./microduck-twin status           what is still running
     ./microduck-twin log              what the daemon is saying
     ./microduck-twin down             stop it
@@ -517,12 +552,43 @@ status() {
 tests() {
     "$HERE/codec/tests/argv.sh"
     echo
+
+    say "the field's arithmetic"
+    (cd "$HERE/duck-audio" && CARGO_TARGET_DIR="$STATE/cargo" cargo test --release --quiet)
+    echo
+
     if [ -x "$MICRODUCK_RL/.venv/bin/python" ]; then
         TWIN_MICRODUCK_RL="$MICRODUCK_RL" \
             "$MICRODUCK_RL/.venv/bin/python" "$HERE/twin-body/tests/occlusion.py"
     else
         warn "no venv at $MICRODUCK_RL — run \`up\` once for the geometry tests"
     fi
+    echo
+
+    # The whole path, which only exists while a twin is up. Skipped rather than failed:
+    # `test` has to be worth running on a laptop that has not started anything.
+    if [ -S "$STATE/duck-b.sock" ]; then
+        say "one duck quacks, the other hears it"
+        TWIN_AUDIO_PORT="$AUDIO_PORT" python3 "$HERE/duck-audio/tests/hearing.py"
+    else
+        warn "no second duck up — \`TWIN_DUCKS=2 ./microduck-twin up\` for the hearing test"
+    fi
+}
+
+# What a duck hears, on your own speakers. This is the honest monitor: not a tap on the
+# speaker wire, but the room as that ear receives it — attenuated, delayed and muffled by
+# whatever is between.
+listen() {
+    name=$1
+    index=$(printf %s "$LETTERS" | awk -v c="$(printf %s "$name" | cut -c6)" \
+        '{ print index($0, c) - 1 }')
+    [ "$index" -ge 0 ] 2>/dev/null || die "$name is not a duck"
+    port=$((AUDIO_PORT + 2 * index + 1))
+    have ffplay || die "listening needs ffplay: brew install ffmpeg, or apt install ffmpeg"
+    say "$name hears this (ctrl-c to stop)"
+    exec ffplay -hide_banner -loglevel quiet -nodisp \
+        -fflags nobuffer -flags low_delay -probesize 32 \
+        -f s16le -ar 16000 -ch_layout mono -i "tcp://127.0.0.1:$port"
 }
 
 where() {
@@ -544,6 +610,7 @@ microduck-twin — a complete Microduck, on a machine that is not one.
   where         the state directory, and what is in it
   test          the codec's contract, and the geometry the field reads
   realtime      how fast the world runs against the clock
+  listen [DUCK] play what a duck's microphone hears
 
 Environment: TWIN_STATE TWIN_DUCKS TWIN_PORT TWIN_SCENE TWIN_KEYFRAME
              TWIN_CAMERAS TWIN_VIEWER TWIN_DUCK TWIN_MICRODUCK TWIN_MICRODUCK_RL
@@ -562,6 +629,7 @@ case "$cmd" in
     where)   where ;;
     test)    tests ;;
     realtime) realtime_factor ;;
+    listen)  listen "${1:-$DUCK}" ;;
     -h|--help|help) usage ;;
     *)       usage; exit 1 ;;
 esac

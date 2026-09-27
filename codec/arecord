@@ -1,0 +1,65 @@
+#!/bin/sh
+# arecord(1), for a duck whose microphone is a simulation.
+#
+# `pet-detect` is the only caller and it forks exactly one shape:
+#
+#     arecord -D <dev> -f S16_LE -r 16000 -c 1 -t raw
+#
+# reading raw PCM off stdout for as long as the worker lives. That is the whole capture
+# seam — there is no in-process ALSA binding to replace — so a machine with no codec gains
+# an ear by putting this directory on PATH ahead of the rest.
+#
+# **The device name is parsed and ignored, and which duck matters instead.** On a robot
+# there is one card and one microphone; here there are N rooms' worth, and the duck this
+# process belongs to is named by `DUCK_IDENTITY` — which the orchestrator sets per duck and
+# nothing on a robot sets at all.
+
+set -eu
+
+rate=16000
+channels=1
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -q|--quiet)                      ;;
+        -D|--device)            shift    ;;  # one room per duck; the card name is noise
+        -t|-f|--format)         shift    ;;  # raw S16_LE is the only shape pet-detect asks for
+        -c|--channels)          channels="${2:-1}"; shift ;;
+        -r|--rate)              rate="${2:-16000}"; shift ;;
+        -*)                              ;;  # anything else: ignore rather than refuse
+        *)                               ;;
+    esac
+    shift
+done
+
+# Duck i hears on the audio base plus 2i plus one; its speaker is the even port beside it.
+# `duck-a` is 0. A name that is not a duck falls back to the first, because a wrong ear is
+# easier to notice than a silent one.
+index=0
+case "${DUCK_IDENTITY:-duck-a}" in
+    duck-?) index=$(awk -v c="$(printf %s "${DUCK_IDENTITY:-duck-a}" | cut -c6)" \
+        'BEGIN { print index("abcdefghijklmnopqrstuvwxyz", c) - 1 }') ;;
+esac
+[ "$index" -ge 0 ] 2>/dev/null || index=0
+
+base="${TWIN_AUDIO_PORT:-0}"
+if [ "$base" = 0 ]; then
+    # No field: no microphone. Blocking rather than exiting, because `pet-detect` restarts
+    # `arecord` the moment it ends and upstream records what that costs — the worker
+    # fork/execs as fast as the CPU allows for the life of the daemon.
+    while true; do sleep 3600; done
+fi
+
+port=$((base + 2 * index + 1))
+
+here=$(cd "$(dirname "$0")" && pwd)
+listen="$here/../state/cargo/release/duck-listen"
+[ -x "$listen" ] || listen=duck-listen
+
+# `--rate` and `--channels` are accepted and not passed on: the field carries exactly the
+# 16 kHz mono `pet-detect` asks for, and a caller asking for something else would be a
+# caller this shim has never seen. Recorded here so the next one is not a silent surprise.
+[ "$rate" = 16000 ] || echo "arecord: the field is 16 kHz, not $rate" >&2
+[ "$channels" = 1 ] || echo "arecord: the field is mono, not $channels channels" >&2
+
+exec "$listen" --port "$port"

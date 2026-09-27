@@ -47,6 +47,17 @@ done
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Which duck this is. On a robot there is one card; here there is one room per duck, and
+# `DUCK_IDENTITY` is what names them — set by the orchestrator, and set by nothing on a
+# robot. Duck i speaks on the audio base plus 2i.
+duck_index() {
+    case "${DUCK_IDENTITY:-duck-a}" in
+        duck-?) awk -v c="$(printf %s "${DUCK_IDENTITY:-duck-a}" | cut -c6)" \
+            'BEGIN { print index("abcdefghijklmnopqrstuvwxyz", c) - 1 }' ;;
+        *) echo 0 ;;
+    esac
+}
+
 # The system's own `aplay`, on a machine that has one. Found by walking PATH and skipping
 # this script's own directory — we are called `aplay` and are ahead of it on purpose, so
 # `command -v aplay` would find us and we would exec ourselves until the stack gave out.
@@ -67,6 +78,39 @@ system_aplay() {
     IFS=$saved_ifs
     return 1
 }
+
+# **With a field running, a duck speaks into the room rather than at the machine.** That is
+# the whole point of the field: who hears it, how loudly and how long it takes to arrive are
+# the room's business, not this shim's. To hear it yourself, listen to a duck's microphone —
+# `microduck-twin listen` does exactly that.
+#
+# Without one, the old behaviour: straight to the host, so a twin with no field is still a
+# duck you can hear.
+if [ "${TWIN_AUDIO_PORT:-0}" != 0 ]; then
+    index=$(duck_index)
+    [ "$index" -ge 0 ] 2>/dev/null || index=0
+    speaker=$((TWIN_AUDIO_PORT + 2 * index))
+
+    here=$(cd "$(dirname "$0")" && pwd)
+    speak="$here/../state/cargo/release/duck-speak"
+    [ -x "$speak" ] || speak=duck-speak
+
+    if [ "$raw" = 1 ]; then
+        set -- "$speak" --port "$speaker" --raw --rate "$rate" --channels "$channels"
+    elif [ -n "$file" ]; then
+        set -- "$speak" --port "$speaker" --file "$file"
+    else
+        set --
+    fi
+
+    if [ "${TWIN_CODEC_DRY_RUN:-0}" = 1 ]; then
+        printf 'parse raw=%s rate=%s channels=%s file=%s\n' "$raw" "$rate" "$channels" "$file"
+        printf 'exec %s\n' "$*"
+        exit 0
+    fi
+    [ $# -gt 0 ] || exit 0
+    exec "$@"
+fi
 
 # `-ch_layout`, not `-ac`: ffplay is not ffmpeg and has no channel-count option. It answers
 # "Option not found" and then plays the stream as stereo, at half speed.

@@ -1,0 +1,12 @@
+[package]
+name = "duck-audio"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "The air between simulated ducks: what one says, another hears, attenuated by distance and stopped by walls."
+
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = 2

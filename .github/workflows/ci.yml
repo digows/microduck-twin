@@ -32,10 +32,27 @@ jobs:
       - name: the codec answers the daemons
         run: codec/tests/argv.sh
 
+  field:
+    name: the field on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: the arithmetic, and the wav parser
+        working-directory: duck-audio
+        run: cargo test --release
+      - name: it builds warning-free
+        working-directory: duck-audio
+        run: cargo clippy --release --all-targets -- -D warnings
+
   shell:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck --shell=sh microduck-twin codec/aplay codec/tests/argv.sh
+      - run: shellcheck --shell=sh microduck-twin codec/aplay codec/arecord codec/tests/argv.sh

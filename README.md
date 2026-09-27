@@ -114,9 +114,16 @@ cd microduck-twin
 ./microduck-twin down
 ```
 
+A MuJoCo window opens and the duck stands up in it. `TWIN_VIEWER=0` for a headless run.
+
 The first `up` clones the two upstreams at the commits in `deps.env`, builds the daemons, makes
 the simulator's venv and fetches the official policy set. After that it takes seconds. To work
 against checkouts you already have, point `TWIN_MICRODUCK` and `TWIN_MICRODUCK_RL` at them.
+
+Everything it makes lives in `state/`, inside the clone and ignored by it — three gigabytes and
+more, so that deleting the clone deletes the lot. `./microduck-twin where` says what is in there.
+If your clone sits somewhere deep, `up` will refuse and tell you: a unix socket path is capped at
+about 104 bytes and every daemon gets one.
 
 You need `git`, `cargo` and `uv`. macOS also wants `ffmpeg` for the raw-PCM path — `afplay` is in
 the base system and Linux uses its own ALSA. Without any player the duck is simply quiet, which is

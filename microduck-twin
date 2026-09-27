@@ -13,10 +13,12 @@ set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 
-# Short on purpose. A unix socket path is capped at about 108 bytes and every daemon here
-# gets one, so a state directory under a deep working tree runs out of room in the middle of
-# a name and the failure reads as a daemon that will not start.
-STATE="${TWIN_STATE:-$HOME/.cache/microduck-twin}"
+# Everything this makes lives here: the two upstream checkouts, their build output, the
+# policies, each duck's voice, the sockets and the logs. Three gigabytes and more, inside the
+# repository and ignored by it, so that deleting the clone deletes the lot — a tool that
+# leaves gigabytes in a home directory nobody remembers is a tool that gets uninstalled by
+# `du`.
+STATE="${TWIN_STATE:-$HERE/state}"
 
 DUCKS="${TWIN_DUCKS:-1}"
 PORT="${TWIN_PORT:-7801}"
@@ -24,7 +26,9 @@ FRAME_PORT="${TWIN_FRAME_PORT:-7901}"
 SCENE="${TWIN_SCENE:-apartment}"
 KEYFRAME="${TWIN_KEYFRAME:-SIT}"
 CAMERAS="${TWIN_CAMERAS:-}"
-VIEWER="${TWIN_VIEWER:-0}"
+# On, because a twin you cannot watch is a log file. `TWIN_VIEWER=0` for a headless run —
+# CI, a test, or a machine with no display.
+VIEWER="${TWIN_VIEWER:-1}"
 DUCK="${TWIN_DUCK:-duck-a}"
 
 LETTERS=abcdefghijklmnopqrstuvwxyz
@@ -34,6 +38,21 @@ LETTERS=abcdefghijklmnopqrstuvwxyz
 
 MICRODUCK="${TWIN_MICRODUCK:-$STATE/src/microduck}"
 MICRODUCK_RL="${TWIN_MICRODUCK_RL:-$STATE/src/microduck_rl}"
+
+# **A unix socket path is capped**, at 104 bytes on macOS and 108 on Linux, and every daemon
+# here gets one under the state directory. Over the limit, `bind` truncates in the middle of
+# a name and the failure presents as a daemon that will not start for no stated reason. The
+# longest name this writes is `duck-z-updater.sock`, so the check is on what is left for it.
+check_state_path() {
+    longest=$(( ${#STATE} + 21 ))
+    [ "$longest" -le 100 ] && return 0
+    printf '\033[31m==\033[0m %s\n' "the state directory's path is too long for a unix socket." >&2
+    printf '\n    %s\n' "$STATE" >&2
+    printf '    %s bytes with a socket name on the end, and the cap is about 104.\n\n' "$longest" >&2
+    printf '  Put it somewhere shorter:\n\n' >&2
+    printf '    TWIN_STATE=~/.cache/microduck-twin %s up\n\n' "$0" >&2
+    exit 1
+}
 
 say()  { printf '\033[36m==\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m==\033[0m %s\n' "$*" >&2; }
@@ -426,6 +445,7 @@ stand() {
 
 up() {
     doctor
+    check_state_path
     sources
     venv
     daemons
@@ -437,6 +457,8 @@ up() {
     stand
     echo
     ctl health 2>/dev/null | head -3 || true
+    echo
+    say "the duck keeps running after this command returns — $(realtime_factor)"
     cat <<TEXT
 
   Your duck is up, and it can be heard.
@@ -444,10 +466,33 @@ up() {
     ./microduck-twin ctl quack        its own voice, from its own serial
     ./microduck-twin ctl health       or anything else robotctl does
     ./microduck-twin ctl robot do roulade
+    ./microduck-twin status           what is still running
     ./microduck-twin log              what the daemon is saying
-    ./microduck-twin down
+    ./microduck-twin down             stop it
 
 TEXT
+}
+
+# How fast the world is running against the clock. Not a curiosity: the daemons' loops are
+# wall-clock, so a world below 1.0x is one where the policies are driving a robot that moves
+# less than they expect and cannot balance it. Below 45 Hz the duck goes *unhealthy* rather
+# than merely slow, which reads as a broken policy and is a busy machine.
+realtime_factor() {
+    "$MICRODUCK_RL/.venv/bin/python" - "$PORT" <<'PY' 2>/dev/null || echo "real time unknown"
+import json, socket, sys, time
+port = int(sys.argv[1])
+def sim_time():
+    s = socket.create_connection(("127.0.0.1", port), timeout=3)
+    f = s.makefile("rw")
+    f.write('{"op":"hello","protocol":1,"joints":15}\n'); f.flush(); f.readline()
+    f.write('{"op":"read"}\n'); f.flush()
+    t = json.loads(f.readline())["sim_time"]
+    s.close()
+    return t
+a = sim_time(); w = time.time(); time.sleep(1.0)
+b = sim_time(); elapsed = time.time() - w
+print(f"the world is running at {(b - a) / elapsed:.2f}x real time")
+PY
 }
 
 status() {
@@ -480,6 +525,12 @@ tests() {
     fi
 }
 
+where() {
+    echo "$STATE"
+    [ -d "$STATE" ] || { echo "  (nothing yet — run \`up\`)"; return 0; }
+    du -sh "$STATE"/* 2>/dev/null | sort -rh | head -8 | sed 's/^/  /'
+}
+
 usage() {
     cat <<TEXT
 microduck-twin — a complete Microduck, on a machine that is not one.
@@ -490,7 +541,9 @@ microduck-twin — a complete Microduck, on a machine that is not one.
   status        what is running, and the duck's health
   log [WHAT]    a daemon's log (default: robotd)
   doctor        what the host is missing, and the line to paste
+  where         the state directory, and what is in it
   test          the codec's contract, and the geometry the field reads
+  realtime      how fast the world runs against the clock
 
 Environment: TWIN_STATE TWIN_DUCKS TWIN_PORT TWIN_SCENE TWIN_KEYFRAME
              TWIN_CAMERAS TWIN_VIEWER TWIN_DUCK TWIN_MICRODUCK TWIN_MICRODUCK_RL
@@ -506,7 +559,9 @@ case "$cmd" in
     status)  status ;;
     log)     what="${1:-$DUCK}"; exec tail -f "$STATE/$what.log" ;;
     doctor)  doctor ;;
+    where)   where ;;
     test)    tests ;;
+    realtime) realtime_factor ;;
     -h|--help|help) usage ;;
     *)       usage; exit 1 ;;
 esac

@@ -55,5 +55,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck --shell=sh microduck-twin codec/aplay codec/arecord \
-          codec/tests/argv.sh tests/roller.sh
+      # One line: a `run:` is a plain YAML scalar, so a backslash-newline folds into a
+      # literal "\ " and shellcheck is handed a file called `\`.
+      - run: shellcheck --shell=sh microduck-twin codec/aplay codec/arecord codec/tests/argv.sh tests/roller.sh

@@ -31,6 +31,12 @@ import numpy as np
 
 HZ = 10.0
 
+# What a key means. The walking policy was trained to about 0.3 m/s and the twin's own
+# rehearsal script caps there; a turn of 0.8 rad/s is brisk without spinning the duck.
+WALK = 0.3
+STRAFE = 0.2
+TURN = 0.8
+
 # `mjtGridPos`, which is where a corner is.
 TOPLEFT = mujoco.mjtGridPos.mjGRID_TOPLEFT
 TOPRIGHT = mujoco.mjtGridPos.mjGRID_TOPRIGHT
@@ -154,6 +160,8 @@ class Hud:
         self.said = ""
         self.said_until = 0.0
         self.velocity = [0.0, 0.0, 0.0]
+        self.gaze = 0.0
+        self.powered = True
         threading.Thread(target=self._run, daemon=True).start()
         threading.Thread(target=self._drive, daemon=True).start()
 
@@ -164,18 +172,34 @@ class Hud:
         self.said_until = time.monotonic() + 2.5
 
     def key(self, code: int) -> None:
-        """One keypress. GLFW codes; the arrows are 262-265."""
-        step = 0.1
+        """One keypress. GLFW codes; the arrows are 262-265.
+
+        **A press walks.** The first version added a tenth of a metre a second per press,
+        which is `infer_policy.py`'s convention for tuning a gait and is wrong for a
+        console: it took four presses to go anywhere, and the robot had already stopped by
+        then because nothing was being sent in between. A key sets the command outright
+        and the opposite key reverses it.
+        """
         if code == 265:    # up
-            self.velocity[0] = min(0.3, self.velocity[0] + step); self.say("forward")
+            self.velocity[0] = WALK; self.say("forward")
         elif code == 264:  # down
-            self.velocity[0] = max(-0.3, self.velocity[0] - step); self.say("back")
+            self.velocity[0] = -WALK; self.say("back")
         elif code == 263:  # left
-            self.velocity[2] = min(1.5, self.velocity[2] + 0.3); self.say("turning left")
+            self.velocity[2] = TURN; self.say("turning left")
         elif code == 262:  # right
-            self.velocity[2] = max(-1.5, self.velocity[2] - 0.3); self.say("turning right")
+            self.velocity[2] = -TURN; self.say("turning right")
+        elif code == ord("A"):
+            self.velocity[1] = STRAFE; self.say("stepping left")
+        elif code == ord("D"):
+            self.velocity[1] = -STRAFE; self.say("stepping right")
         elif code == 32:   # space
-            self.velocity = [0.0, 0.0, 0.0]; self.say("stop")
+            self.velocity = [0.0, 0.0, 0.0]
+            self.daemon.notify("robot.stop", {})
+            self.say("stop")
+        elif code == ord("W"):
+            self.look(0.35); self.say("looking up")
+        elif code == ord("S"):
+            self.look(-0.35); self.say("looking down")
         elif code == ord("Q"):
             self.daemon.notify("robot.sound", {"tag": "chirp"}); self.say("quack")
         elif code == ord("Y"):
@@ -184,8 +208,54 @@ class Hud:
             self.daemon.call("robot.do", {"skill": "roulade"}); self.say("roulade")
         elif code == ord("G"):
             self.daemon.call("robot.do", {"skill": "ground_pick"}); self.say("ground pick")
+        elif code == ord("K"):
+            self.daemon.call("robot.do", {"skill": "kick_left"}); self.say("kick, left")
+        elif code == ord("L"):
+            self.daemon.call("robot.do", {"skill": "kick_right"}); self.say("kick, right")
+        elif code == ord("T"):
+            self.torque(); self.say("torque " + ("on" if self.powered else "off"))
         elif code == ord("P"):
             self.push(); self.say("shoved")
+        elif code == ord("Z"):
+            self.respawn(); self.say("put back")
+
+    def look(self, height: float) -> None:
+        """Point the head at a spot in the trunk frame: X forward, Z up, metres.
+
+        The daemon runs the gaze IK itself, so this is a place to look rather than four
+        joint angles — `1 0 0` is straight ahead.
+        """
+        self.gaze = max(-0.4, min(0.4, self.gaze + height))
+        self.daemon.notify("robot.look", {"x": 1.0, "y": 0.0, "z": self.gaze})
+
+    def torque(self) -> None:
+        """Hand the robot to its policy, or take it back.
+
+        `robot.enable` wants `{"on": …}` and says so — "missing field `on`" — rather than
+        being two methods. `robot.relax` exists as well and is a different thing: it cuts
+        power outright, where this is the policy's leash.
+        """
+        self.powered = not self.powered
+        self.daemon.call("robot.enable", {"on": self.powered})
+
+    def respawn(self) -> None:
+        """Put the duck back where it started.
+
+        `scene_apartment.xml` lays its own floors and has no ground plane — walk out of the
+        flat and there is nothing there, which is the scene saying so rather than a bug.
+        What follows is a duck a kilometre down with its servos saturated and its battery
+        reading empty, and no key in `robotctl` brings it home: the daemon has no opinion
+        about where a robot is in the world, because a robot cannot be moved by asking.
+        The body can, and does here, because this is the twin's console.
+        """
+        body = self.bodies[0]
+        with self.world.lock:
+            data = self.world.data
+            data.qpos[body.trunk + 0] = 0.0
+            data.qpos[body.trunk + 1] = 0.0
+            data.qpos[body.trunk + 2] = 0.20
+            data.qpos[body.trunk + 3:body.trunk + 7] = [1.0, 0.0, 0.0, 0.0]
+            data.qvel[body.trunk_dof:body.trunk_dof + 6] = 0.0
 
     def push(self) -> None:
         body = self.bodies[0]
@@ -252,17 +322,22 @@ class Hud:
             f"{sim_time:.0f} s",
         ])
 
+        # The apartment has no ground plane, so a duck driven out of the flat falls for
+        # ever — and every other number goes strange with it. Say which it is.
+        lost = trunk[2] < -0.5
         right_labels = "\n".join(["ducks", "ear height", "command", "", "depth 8x8"])
         right_values = "\n".join([
             str(len(self.bodies)),
-            f"{hears[0][2]:.2f} m" if hears else "unplaced",
-            f"vx {self.velocity[0]:+.2f}  vyaw {self.velocity[2]:+.2f}",
+            "out of the flat — press Z" if lost else (f"{hears[0][2]:.2f} m" if hears else "unplaced"),
+            f"vx {self.velocity[0]:+.2f}  vy {self.velocity[1]:+.2f}  vyaw {self.velocity[2]:+.2f}",
             "",
             "below: near is warm, dark is nothing",
         ])
 
-        keys_labels = "arrows\nspace\nQ / Y\nR / G\nP"
-        keys_values = "walk and turn\nstop\nquack, sit\nroulade, ground pick\nshove"
+        keys_labels = "arrows\nA / D\nW / S\nspace\nQ / Y\nR / G\nK / L\nT / P\nZ"
+        keys_values = ("walk and turn\nstep sideways\nlook up, down\nstop\n"
+                       "quack, sit\nroulade, ground pick\nkick left, right\n"
+                       "torque, shove\nput the duck back")
         if time.monotonic() < self.said_until:
             keys_values = f"{keys_values}\n\n{self.said}"
             keys_labels = f"{keys_labels}\n\n>"

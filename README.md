@@ -122,8 +122,23 @@ have to arrange beside it.
 The battery, the hottest motor, the ear's level, where the trunk is and how long the world has
 been running are in the top left; the depth grid is a bitmap in the corner, near warm and far
 cold, with a zone that could not measure left dark because that is not the same as empty space.
-Arrows walk and turn, space stops, `Q` quacks, `Y` sits, `R` rolls, `G` picks up, `P` shoves —
-the vocabulary `infer_policy.py` has already taught everyone who has driven this robot.
+| key | |
+|---|---|
+| arrows | walk and turn |
+| `A` `D` | step sideways |
+| `W` `S` | look up, look down |
+| space | stop |
+| `Q` `Y` | quack, sit or stand |
+| `R` `G` | roulade, ground pick |
+| `K` `L` | kick left, kick right |
+| `T` `P` | torque on or off, shove |
+| `Z` | put the duck back |
+
+A press walks rather than nudging: the daemon's deadman zeroes an intent that stops arriving
+after 500 ms, so a key sets the command and a thread keeps saying it until another key changes
+it. `Z` is there because the apartment lays its own floors and has no ground plane — drive out
+of the flat and there is nothing under you, and no `robotctl` verb brings a robot home, because
+a robot cannot be moved by asking.
 
 It is wrapped, not forked: `body_server.run` owns the viewer and fifty lines of carefully paced
 real-time loop, so `launch_passive` is wrapped, the handle is kept, and a thread writes to it

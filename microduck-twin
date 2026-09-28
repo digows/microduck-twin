@@ -429,6 +429,7 @@ start_body() {
     # daemon and where its own ear is. Nothing on a robot sets either.
     PYTHONPATH="$HERE/twin-body${PYTHONPATH:+:$PYTHONPATH}" \
     TWIN_ROBOT_SOCKET="$STATE/$(duck_name 0).sock" TWIN_AUDIO_PORT="$AUDIO_PORT" \
+    TWIN_BIN="$HERE/microduck-twin" TWIN_STATE="$STATE" \
         spawn body "twin_body --port $PORT" "$py" -m twin_body \
         --port "$PORT" --ducks "$DUCKS" --keyframe "$KEYFRAME" $headless $scene_arg $cams
     wait_for_port "$PORT" || die "the body never opened $PORT. $STATE/body.log has why."
@@ -567,7 +568,7 @@ up() {
 
     ./microduck-twin ctl quack        its own voice — you hear the room it is in
     ./microduck-twin ctl health       or anything else robotctl does
-    arrows, Q, Y, R, G, P             drive it from the window itself
+    arrows and letters                drive it from the window (press ? there)
     ./microduck-twin ctl robot do roulade
     ./microduck-twin listen duck-b    hear what another duck hears
     ./microduck-twin status           what is still running

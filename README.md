@@ -126,13 +126,21 @@ cold, with a zone that could not measure left dark because that is not the same 
 |---|---|
 | arrows | walk and turn |
 | `A` `D` | step sideways |
-| `W` `S` | look up, look down |
+| `I` `M` | look up, look down |
 | space | stop |
-| `Q` `Y` | quack, sit or stand |
-| `R` `G` | roulade, ground pick |
-| `K` `L` | kick left, kick right |
-| `T` `P` | torque on or off, shove |
-| `Z` | put the duck back |
+| `Q` `V` | quack, next voice |
+| `Y` `E` | sit or stand, roulade |
+| `C` `N` `B` | ground pick, kick left, kick right |
+| `H` `T` `P` | scratch its head, torque, shove |
+| `Z` `O` | put the duck back, wheels on or off |
+
+**Every one of those letters belongs to MuJoCo**, which binds all of A–Z to a visualisation
+flag and calls a user key callback *in addition to* its own handling rather than instead of
+it. Twenty of them toggle a flag in `mjvOption`, which the viewer handle exposes and which is
+writable, so the key does its job here and has its side effect put back in the same frame —
+`D` steps the duck sideways instead of blacking the flat out. The six whose flags live in the
+scene instead — `G K L R S W` — cannot be undone, so none of them is used. The map is read
+from `mjVISSTRING` at run time rather than transcribed.
 
 A press walks rather than nudging: the daemon's deadman zeroes an intent that stops arriving
 after 500 ms, so a key sets the command and a thread keeps saying it until another key changes

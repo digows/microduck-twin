@@ -3,9 +3,20 @@
 There were two surfaces: a MuJoCo window with no numbers on it, and a browser page with all
 of them. Two places to look is the thing this project keeps saying it does not want, and
 MuJoCo's passive viewer turns out to be able to host the numbers — `set_texts` puts two
-columns in each corner, `set_images` puts a bitmap at a viewport, and `key_callback` takes
-the keys. So the window is the console, and the page is what a window cannot be: reachable
-from another machine, and able to hear you.
+columns in each corner and `set_images` puts a bitmap at a viewport. So the window is where
+the duck is watched and where its numbers live.
+
+**Every letter is already taken, and taken back.** MuJoCo's own viewer binds all of A-Z to
+a visualisation flag — `W` is wireframe, `D` hides static bodies and blacks the room out —
+and a user `key_callback` is called *in addition to* that handling rather than instead of
+it, from C++ that Python cannot reach.
+
+What it cannot reach it can undo. Twenty of those letters toggle a flag in `mjvOption`,
+which the handle exposes and which is writable, so a key can do its job here and have its
+side effect put back in the same frame. The six that do not — `G K L R S W`, whose flags
+live in the scene rather than the option — are left alone and unused. The map is read from
+`mjVISSTRING` at run time rather than transcribed, so a MuJoCo that moves a flag moves this
+with it.
 
 **Wrapped, not copied.** `body_server.run` owns the viewer and a carefully paced real-time
 loop; taking a copy of that to add an overlay would be a fork of the part most worth not
@@ -36,6 +47,27 @@ HZ = 10.0
 WALK = 0.3
 STRAFE = 0.2
 TURN = 0.8
+
+# The tags `sounds` renders into every duck's bank, in the order V steps through them.
+VOICES = ["chirp", "greet", "coo", "inquire", "peck", "alarm", "wheee"]
+
+
+def recoverable_keys() -> dict[str, int]:
+    """Letter to `mjvOption` flag index, for the keys whose side effect can be undone.
+
+    Read from `mjVISSTRING` rather than transcribed: it is the table simulate itself binds
+    from, so a MuJoCo that moves a flag moves this with it. The render flags in
+    `mjRNDSTRING` — G, K, L, R, S, W — live in the scene instead and are not reachable from
+    the handle, which is why no key here is one of them.
+    """
+    return {
+        row[2].upper(): index
+        for index, row in enumerate(mujoco.mjVISSTRING)
+        if row[2].strip() and row[2].upper().isalpha()
+    }
+
+
+VIS_KEYS = recoverable_keys()
 
 # `mjtGridPos`, which is where a corner is.
 TOPLEFT = mujoco.mjtGridPos.mjGRID_TOPLEFT
@@ -85,9 +117,16 @@ class Daemon:
             except OSError:
                 self._drop()
 
-    def call(self, method: str, params: dict | None = None):
+    def call(self, method: str, params: dict | None = None) -> str | None:
+        """The daemon's objection, or None when it did the thing.
+
+        **A refusal is the answer.** Returning the result and nothing else turned "unknown
+        field `name`, expected `skill`" into a silent success, and a duck that ignores a key
+        with no word about why is the hardest kind of wrong to find. The daemon also refuses
+        politely inside a result — `{"accepted": false, "reason": …}` — and that counts too.
+        """
         if not self.path:
-            return None
+            return "no daemon socket"
         with self.lock:
             try:
                 self._connect()
@@ -96,10 +135,16 @@ class Daemon:
                                 "params": params or {}}) + "\n"
                 )
                 self.file.flush()
-                return json.loads(self.file.readline()).get("result")
-            except (OSError, ValueError):
+                answer = json.loads(self.file.readline())
+            except (OSError, ValueError) as error:
                 self._drop()
-                return None
+                return f"unreachable: {error}"
+        if "error" in answer:
+            return f"refused: {answer['error'].get('message', answer['error'])}"
+        result = answer.get("result") or {}
+        if isinstance(result, dict) and result.get("accepted") is False:
+            return f"refused: {result.get('reason', 'no reason given')}"
+        return None
 
 
 class Ear:
@@ -162,23 +207,28 @@ class Hud:
         self.velocity = [0.0, 0.0, 0.0]
         self.gaze = 0.0
         self.powered = True
+        self.voice = 0
+        audio = os.environ.get("TWIN_AUDIO_PORT")
+        self.speaker_port = int(audio) if audio and audio.isdigit() else None
+        # What the room looked like before anyone pressed anything. Every key this handles
+        # is a letter MuJoCo binds to one of these, and every frame puts them back.
+        self.flag_baseline = {
+            index: bool(handle.opt.flags[index]) for index in VIS_KEYS.values()
+        }
         threading.Thread(target=self._run, daemon=True).start()
         threading.Thread(target=self._drive, daemon=True).start()
 
     # ── the keys ─────────────────────────────────────────────────────────────
 
-    def say(self, text: str) -> None:
-        self.said = text
-        self.said_until = time.monotonic() + 2.5
+    # ── the keys ─────────────────────────────────────────────────────────────
 
     def key(self, code: int) -> None:
         """One keypress. GLFW codes; the arrows are 262-265.
 
-        **A press walks.** The first version added a tenth of a metre a second per press,
-        which is `infer_policy.py`'s convention for tuning a gait and is wrong for a
-        console: it took four presses to go anywhere, and the robot had already stopped by
-        then because nothing was being sent in between. A key sets the command outright
-        and the opposite key reverses it.
+        **A press walks.** An earlier version added a tenth of a metre a second per press,
+        which is `infer_policy.py`'s convention for tuning a gait and is wrong for driving:
+        it took four presses to go anywhere and the duck had already stopped by then,
+        because the deadman zeroes an intent that stops arriving.
         """
         if code == 265:    # up
             self.velocity[0] = WALK; self.say("forward")
@@ -188,65 +238,72 @@ class Hud:
             self.velocity[2] = TURN; self.say("turning left")
         elif code == 262:  # right
             self.velocity[2] = -TURN; self.say("turning right")
+        elif code == 32:   # space
+            self.velocity = [0.0, 0.0, 0.0]
+            self.daemon.notify("robot.stop", {})
+            self.say("stopped")
         elif code == ord("A"):
             self.velocity[1] = STRAFE; self.say("stepping left")
         elif code == ord("D"):
             self.velocity[1] = -STRAFE; self.say("stepping right")
-        elif code == 32:   # space
-            self.velocity = [0.0, 0.0, 0.0]
-            self.daemon.notify("robot.stop", {})
-            self.say("stop")
-        elif code == ord("W"):
-            self.look(0.35); self.say("looking up")
-        elif code == ord("S"):
-            self.look(-0.35); self.say("looking down")
+        elif code in (ord("I"), ord("M")):
+            self.gaze = max(-0.4, min(0.4, self.gaze + (0.2 if code == ord("I") else -0.2)))
+            self.daemon.notify("robot.look", {"x": 1.0, "y": 0.0, "z": self.gaze})
+            self.say(f"looking at z {self.gaze:+.1f}")
         elif code == ord("Q"):
-            self.daemon.notify("robot.sound", {"tag": "chirp"}); self.say("quack")
-        elif code == ord("Y"):
-            self.daemon.call("robot.do", {"skill": "sit_toggle"}); self.say("sit / stand")
-        elif code == ord("R"):
-            self.daemon.call("robot.do", {"skill": "roulade"}); self.say("roulade")
-        elif code == ord("G"):
-            self.daemon.call("robot.do", {"skill": "ground_pick"}); self.say("ground pick")
-        elif code == ord("K"):
-            self.daemon.call("robot.do", {"skill": "kick_left"}); self.say("kick, left")
-        elif code == ord("L"):
-            self.daemon.call("robot.do", {"skill": "kick_right"}); self.say("kick, right")
+            self.skill_say(self.daemon.call("robot.sound", {"tag": VOICES[self.voice]}),
+                           f"said {VOICES[self.voice]}")
+        elif code == ord("V"):
+            self.voice = (self.voice + 1) % len(VOICES)
+            self.say(f"voice: {VOICES[self.voice]}")
+        elif code in (ord("Y"), ord("E"), ord("C"), ord("N"), ord("B")):
+            skill = {ord("Y"): "sit_toggle", ord("E"): "roulade", ord("C"): "ground_pick",
+                     ord("N"): "kick_left", ord("B"): "kick_right"}[code]
+            self.skill_say(self.daemon.call("robot.do", {"skill": skill}), skill)
         elif code == ord("T"):
-            self.torque(); self.say("torque " + ("on" if self.powered else "off"))
+            self.powered = not self.powered
+            self.skill_say(self.daemon.call("robot.enable", {"on": self.powered}),
+                           "torque on" if self.powered else "torque off")
+        elif code == ord("H"):
+            threading.Thread(target=self.scratch, daemon=True).start()
+            self.say("scratching — pet-detect decides")
         elif code == ord("P"):
             self.push(); self.say("shoved")
         elif code == ord("Z"):
             self.respawn(); self.say("put back")
+        elif code == ord("O"):
+            self.wheels()
 
-    def look(self, height: float) -> None:
-        """Point the head at a spot in the trunk frame: X forward, Z up, metres.
+        # **Put the room back.** The viewer has already toggled whatever flag this letter
+        # is bound to, in C++, before or after this runs — the order is not ours to know.
+        # Flipping it here covers one case and the baseline enforced every frame covers the
+        # other, so `D` drives the duck sideways instead of blacking the flat out.
+        self.restore_flags()
 
-        The daemon runs the gaze IK itself, so this is a place to look rather than four
-        joint angles — `1 0 0` is straight ahead.
-        """
-        self.gaze = max(-0.4, min(0.4, self.gaze + height))
-        self.daemon.notify("robot.look", {"x": 1.0, "y": 0.0, "z": self.gaze})
+    def restore_flags(self) -> None:
+        for index, wanted in self.flag_baseline.items():
+            if self.handle.opt.flags[index] != wanted:
+                self.handle.opt.flags[index] = wanted
 
-    def torque(self) -> None:
-        """Hand the robot to its policy, or take it back.
+    def skill_say(self, refusal, done: str) -> None:
+        """The daemon's own words when it refuses, rather than a cheerful lie."""
+        self.say(refusal or done)
 
-        `robot.enable` wants `{"on": …}` and says so — "missing field `on`" — rather than
-        being two methods. `robot.relax` exists as well and is a different thing: it cuts
-        power outright, where this is the policy's leash.
-        """
-        self.powered = not self.powered
-        self.daemon.call("robot.enable", {"on": self.powered})
+    def look_away(self) -> None:
+        self.gaze = 0.0
+
+    def push(self) -> None:
+        body = self.bodies[0]
+        with self.world.lock:
+            self.world.data.qvel[body.trunk_dof + 0] = 0.7
+            self.world.data.qvel[body.trunk_dof + 1] = 0.2
 
     def respawn(self) -> None:
         """Put the duck back where it started.
 
-        `scene_apartment.xml` lays its own floors and has no ground plane — walk out of the
-        flat and there is nothing there, which is the scene saying so rather than a bug.
-        What follows is a duck a kilometre down with its servos saturated and its battery
-        reading empty, and no key in `robotctl` brings it home: the daemon has no opinion
-        about where a robot is in the world, because a robot cannot be moved by asking.
-        The body can, and does here, because this is the twin's console.
+        `scene_apartment.xml` lays its own floors and has no ground plane — drive out of
+        the flat and there is nothing under you. No `robotctl` verb brings a robot home,
+        and rightly: a robot cannot be moved by asking. The body can.
         """
         body = self.bodies[0]
         with self.world.lock:
@@ -257,18 +314,63 @@ class Hud:
             data.qpos[body.trunk + 3:body.trunk + 7] = [1.0, 0.0, 0.0, 0.0]
             data.qvel[body.trunk_dof:body.trunk_dof + 6] = 0.0
 
-    def push(self) -> None:
-        body = self.bodies[0]
-        with self.world.lock:
-            self.world.data.qvel[body.trunk_dof + 0] = 0.7
-            self.world.data.qvel[body.trunk_dof + 1] = 0.2
+    def scratch(self) -> None:
+        """A hand on the duck's head, as a sound at its own speaker.
+
+        `pet-detect` classifies 40-band log-mel windows, so what it wants is broadband noise
+        shaped like a scratch — bursts, because a hand moves — rather than a tone. Whether
+        it calls that petting is its business, and running the real one is the point.
+        """
+        import random
+
+        if not self.speaker_port:
+            self.say("no field — nothing to scratch into")
+            return
+        rate = 48_000
+        envelope = 0.0
+        samples = bytearray()
+        for i in range(int(rate * 0.6)):
+            if i % (rate // 14) == 0:
+                envelope = 1.0
+            envelope *= 0.9997
+            samples += struct.pack("<h", int(random.uniform(-1, 1) * 9000 * envelope))
+        try:
+            with socket.create_connection(("127.0.0.1", self.speaker_port), timeout=2) as s:
+                s.sendall(bytes(samples))
+        except OSError:
+            pass
+
+    def wheels(self) -> None:
+        """Wheels on, or off.
+
+        Another robot and another MJCF, which MuJoCo compiles — so this is a bring-up, and
+        the window it is pressed in goes away and comes back with it. Detached and unwaited,
+        because `down` reaches this process before the key has finished being handled.
+        """
+        import subprocess
+
+        binary = os.environ.get("TWIN_BIN")
+        state = os.environ.get("TWIN_STATE", "")
+        if not binary:
+            self.say("no twin binary in the environment")
+            return
+        here = "walk"
+        try:
+            with open(os.path.join(state, "mode")) as handle:
+                here = handle.read().strip()
+        except OSError:
+            pass
+        want = "off" if here == "roller" else "on"
+        subprocess.Popen([binary, "roller", want], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.say(f"wheels {want} — the twin is coming back up")
 
     def _drive(self):
-        """The velocity command, resent while it is non-zero.
+        """The command, resent while it is non-zero.
 
         `robotd`'s deadman zeroes an intent that stops arriving after 500 ms, which is the
-        robot's own safety and not something to work around: a key sets a velocity and this
-        keeps saying it until a key sets it back.
+        robot's own safety and not a thing to work around: a key sets a velocity and this
+        keeps saying it until another key changes it.
         """
         while True:
             if any(self.velocity):
@@ -276,6 +378,10 @@ class Hud:
                     "vx": self.velocity[0], "vy": self.velocity[1], "vyaw": self.velocity[2],
                 })
             time.sleep(0.1)
+
+    def say(self, text: str) -> None:
+        self.said = text
+        self.said_until = time.monotonic() + 2.5
 
     # ── the numbers ──────────────────────────────────────────────────────────
 
@@ -288,6 +394,7 @@ class Hud:
             try:
                 if not self.handle.is_running():
                     return
+                self.restore_flags()
                 self.draw()
             except Exception as error:
                 print(f"== hud stopped: {type(error).__name__}: {error}", flush=True)
@@ -306,8 +413,14 @@ class Hud:
             pass
 
         with self.world.lock:
-            trunk = [float(v) for v in self.world.data.qpos[body.trunk:body.trunk + 3]]
-            sim_time = float(self.world.data.time)
+            data = self.world.data
+            trunk = [float(v) for v in data.qpos[body.trunk:body.trunk + 3]]
+            sim_time = float(data.time)
+            # What it is doing, not what it was told. The command lives in the terminal
+            # now, and a panel that echoed it would be reporting the driver back to itself.
+            velocity = [float(v) for v in data.qvel[body.trunk_dof:body.trunk_dof + 3]]
+            yaw = float(data.qvel[body.trunk_dof + 5])
+        speed = math.hypot(velocity[0], velocity[1])
 
         percent = max(0.0, min(100.0, (volts - 6.6) / 1.6 * 100.0))
         hottest = max(temps)
@@ -325,19 +438,20 @@ class Hud:
         # The apartment has no ground plane, so a duck driven out of the flat falls for
         # ever — and every other number goes strange with it. Say which it is.
         lost = trunk[2] < -0.5
-        right_labels = "\n".join(["ducks", "ear height", "command", "", "depth 8x8"])
+        right_labels = "\n".join(["ducks", "ear height", "moving", "", "depth 8x8"])
         right_values = "\n".join([
             str(len(self.bodies)),
             "out of the flat — press Z" if lost else (f"{hears[0][2]:.2f} m" if hears else "unplaced"),
-            f"vx {self.velocity[0]:+.2f}  vy {self.velocity[1]:+.2f}  vyaw {self.velocity[2]:+.2f}",
+            f"{speed:+.2f} m/s  {yaw:+.2f} rad/s",
             "",
             "below: near is warm, dark is nothing",
         ])
 
-        keys_labels = "arrows\nA / D\nW / S\nspace\nQ / Y\nR / G\nK / L\nT / P\nZ"
+        keys_labels = ("arrows\nA / D\nI / M\nspace\nQ / V\nY / E\nC / N / B\n"
+                       "H / T / P\nZ / O")
         keys_values = ("walk and turn\nstep sideways\nlook up, down\nstop\n"
-                       "quack, sit\nroulade, ground pick\nkick left, right\n"
-                       "torque, shove\nput the duck back")
+                       "quack, next voice\nsit, roulade\nground pick, kicks\n"
+                       "scratch, torque, shove\nput back, wheels")
         if time.monotonic() < self.said_until:
             keys_values = f"{keys_values}\n\n{self.said}"
             keys_labels = f"{keys_labels}\n\n>"

@@ -33,7 +33,45 @@ class TwinHandler(Handler):
         op = request.get("op")
         if op == "hears":
             return self.hears(body)
+        if op == "push":
+            return self.push(body, request)
+        if op == "place":
+            return self.place(body)
         return super().dispatch(body, request)
+
+    def push(self, body, request: dict) -> dict:
+        """Shove the trunk, the way the training event does.
+
+        Overwrites the world-frame velocity rather than adding to it, so holding the key
+        does not accumulate into a launch. A metre a second is the cap the velstand push
+        curriculum ends at, which is what the standing policy was trained to survive.
+        """
+        vx = float(request.get("vx", 0.7))
+        vy = float(request.get("vy", 0.0))
+        speed = (vx * vx + vy * vy) ** 0.5
+        if speed > 1.0:
+            vx, vy = vx / speed, vy / speed
+        with body.world.lock:
+            body.world.data.qvel[body.trunk_dof + 0] = vx
+            body.world.data.qvel[body.trunk_dof + 1] = vy
+        return {"vx": vx, "vy": vy}
+
+    def place(self, body) -> dict:
+        """Put the duck back where it started.
+
+        `scene_apartment.xml` lays its own floors and has no ground plane — drive out of
+        the flat and there is nothing under you. No `robotctl` verb brings a robot home,
+        and rightly: a robot cannot be moved by asking. The body can, and this is the only
+        op here that exists for a console rather than for a daemon.
+        """
+        with body.world.lock:
+            data = body.world.data
+            data.qpos[body.trunk + 0] = 0.0
+            data.qpos[body.trunk + 1] = 0.0
+            data.qpos[body.trunk + 2] = 0.20
+            data.qpos[body.trunk + 3:body.trunk + 7] = [1.0, 0.0, 0.0, 0.0]
+            data.qvel[body.trunk_dof:body.trunk_dof + 6] = 0.0
+        return {"placed": True}
 
     def hears(self, body) -> dict:
         world = body.world

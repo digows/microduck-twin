@@ -31,7 +31,7 @@ This project is the device that is missing.
 | **Voice** — the duck is audible on a machine with no ALSA | **works** |
 | **Battery and thermals** — they move with what the robot is doing | **works** |
 | **Ear** — the head microphone as a sensor of the simulated world | **works** |
-| **Console** — the duck from above, knobs, every sensor, speak to it | **works** |
+| **Console** — every sensor and the keys, on the window the duck is already in | **works** |
 | **Rollers** — wheels on, wheels off, from the page or the command line | **works** |
 
 ## Why this is not the forty-first Microduck simulator
@@ -112,30 +112,22 @@ from the start, and `./microduck-twin listen duck-b` plays another one. It is th
 monitor — the room as that duck receives it, attenuated, delayed, and muffled by whatever is
 between. A duck the other side of a wall is faint on your desk too.
 
-### The console
+### The console is the window
 
-`./microduck-twin console` serves a page at `127.0.0.1:8090` that is a superset of the one a
-robot serves — which keeps running beside it, untouched, for anyone who wants the real thing.
+There is one surface. MuJoCo's passive viewer will host an overlay — `set_texts` puts two
+columns in each corner, `set_images` puts a bitmap at a viewport, `key_callback` takes the keys
+— so the numbers live on the window the duck is already in rather than on a second screen you
+have to arrange beside it.
 
-It shows the duck from above, rendered by MuJoCo rather than rebuilt in the browser: parsing the
-MJCF for a body tree and loading eighty-six meshes would be a project of its own, and what it
-produced would be a reconstruction. This is the geometry being stepped, with the room around it.
-About 20 ms a frame at 480×360, asked for rather than pushed.
+The battery, the hottest motor, the ear's level, where the trunk is and how long the world has
+been running are in the top left; the depth grid is a bitmap in the corner, near warm and far
+cold, with a zone that could not measure left dark because that is not the same as empty space.
+Arrows walk and turn, space stops, `Q` quacks, `Y` sits, `R` rolls, `G` picks up, `P` shoves —
+the vocabulary `infer_policy.py` has already taught everyone who has driven this robot.
 
-Two knobs drive `robot.move` and `robot.look`, the skills are buttons, and every sensor is on the
-page: joints, the trunk IMU, the 8×8 depth grid, the battery falling, the servos warming, and the
-ear's level. It speaks JSON-RPC 2.0 over each daemon's own socket and routes by namespace, because
-there is no broker — `robotd` refuses `system.info` on the grounds that the robot's identity is
-`configd`'s.
-
-And it acts *on* the duck rather than only with it. Holding **speak** puts your microphone into
-the room at that duck's head, so distance and walls apply to you as they do to a duck.
-**Scratch its head** is broadband noise where the Mic3R is, and the real `pet-detect` decides for
-itself whether that was petting. **Shove it** is the training push, capped at the metre a second
-the standing policy was trained to survive. **Wheels** is a bring-up rather than a switch: the
-daemon distinguishes the two policy sets itself, and on this side the wheels are a different
-robot in a different MJCF, which MuJoCo compiles — so the world goes away and comes back, and
-the daemons live through it the way they live through any body that briefly is not there.
+It is wrapped, not forked: `body_server.run` owns the viewer and fifty lines of carefully paced
+real-time loop, so `launch_passive` is wrapped, the handle is kept, and a thread writes to it
+while their loop goes on calling `sync`.
 
 ## What this is not
 

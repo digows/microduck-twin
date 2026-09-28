@@ -26,6 +26,9 @@ FRAME_PORT="${TWIN_FRAME_PORT:-7901}"
 # Duck i speaks on AUDIO_PORT + 2i and hears on the odd port beside it.
 AUDIO_PORT="${TWIN_AUDIO_PORT:-7951}"
 CONSOLE_PORT="${TWIN_CONSOLE_PORT:-8090}"
+# On, because a duck you cannot hear is the bug this project exists to fix. `TWIN_MONITOR=0`
+# for a silent run.
+MONITOR="${TWIN_MONITOR:-1}"
 # Walk or roller, remembered across commands so `roller on` survives the `up` it triggers.
 # The daemon resolves every unset tuning field per mode, so nothing here is pinned but the
 # policies and the body: a roller robot is one line on a robot and should be one here.
@@ -564,6 +567,7 @@ up() {
     start_body
     start_field
     start_daemons
+    start_monitor
     start_console
     stand
     echo
@@ -574,11 +578,11 @@ up() {
 
   Your duck is up, and it can be heard.
 
-    ./microduck-twin ctl quack        its own voice, from its own serial
+    ./microduck-twin ctl quack        its own voice — you hear the room it is in
     ./microduck-twin ctl health       or anything else robotctl does
     ./microduck-twin ctl robot do roulade
     ./microduck-twin console          the duck from above, the knobs, every sensor
-    ./microduck-twin listen           hear what duck-a hears, room and all
+    ./microduck-twin listen duck-b    hear what another duck hears
     ./microduck-twin status           what is still running
     ./microduck-twin log              what the daemon is saying
     ./microduck-twin down             stop it
@@ -662,20 +666,52 @@ tests() {
     fi
 }
 
-# What a duck hears, on your own speakers. This is the honest monitor: not a tap on the
-# speaker wire, but the room as that ear receives it — attenuated, delayed and muffled by
-# whatever is between.
-listen() {
+mic_port_of() {
     name=$1
     index=$(printf %s "$LETTERS" | awk -v c="$(printf %s "$name" | cut -c6)" \
         '{ print index($0, c) - 1 }')
     [ "$index" -ge 0 ] 2>/dev/null || die "$name is not a duck"
-    port=$((AUDIO_PORT + 2 * index + 1))
+    echo $((AUDIO_PORT + 2 * index + 1))
+}
+
+# What a duck hears, on your own speakers. This is the honest monitor: not a tap on the
+# speaker wire, but the room as that ear receives it — attenuated, delayed and muffled by
+# whatever is between.
+listen() {
     have ffplay || die "listening needs ffplay: brew install ffmpeg, or apt install ffmpeg"
-    say "$name hears this (ctrl-c to stop)"
+    say "$1 hears this (ctrl-c to stop)"
     exec ffplay -hide_banner -loglevel quiet -nodisp \
         -fflags nobuffer -flags low_delay -probesize 32 \
-        -f s16le -ar 16000 -ch_layout mono -i "tcp://127.0.0.1:$port"
+        -f s16le -ar 16000 -ch_layout mono -i "tcp://127.0.0.1:$(mic_port_of "$1")"
+}
+
+# **Standing in the room, rather than holding a command open.**
+#
+# With a field running, a duck speaks into the simulated room and not at the machine — which
+# is right, and which made `ctl quack` silent unless a second terminal was running `listen`.
+# That is not what the duck does: on a robot you hear a quack because you are in the room.
+# So one ear is monitored from the start, and what comes out of the speakers is the room as
+# duck-a receives it, delay and walls and all.
+#
+# In a loop, because the field restarts whenever the number of ducks or the mode changes and
+# the player exits when its stream does. Retrying is what a pair of ears does.
+start_monitor() {
+    [ "$MONITOR" = 1 ] || return 0
+    if ! have ffplay; then
+        warn "no ffplay: the room is silent. brew install ffmpeg, or apt install ffmpeg"
+        return 0
+    fi
+    port=$(mic_port_of "$(duck_name 0)")
+    say "monitor: what duck-a hears, on this machine"
+    spawn monitor "twin-monitor $port" sh -c "
+        while true; do
+            ffplay -hide_banner -loglevel quiet -nodisp -autoexit \
+                -fflags nobuffer -flags low_delay -probesize 32 \
+                -f s16le -ar 16000 -ch_layout mono -i tcp://127.0.0.1:$port \
+                >/dev/null 2>&1
+            sleep 1
+        done
+    " twin-monitor "$port"
 }
 
 console() {
@@ -712,7 +748,7 @@ microduck-twin — a complete Microduck, on a machine that is not one.
   roller on|off put the duck on wheels, or take it off
 
 Environment: TWIN_STATE TWIN_DUCKS TWIN_PORT TWIN_SCENE TWIN_KEYFRAME
-             TWIN_CAMERAS TWIN_VIEWER TWIN_DUCK TWIN_MODE TWIN_CONSOLE_PORT
+             TWIN_CAMERAS TWIN_VIEWER TWIN_MONITOR TWIN_DUCK TWIN_MODE TWIN_CONSOLE_PORT
              TWIN_AUDIO_PORT TWIN_MICRODUCK TWIN_MICRODUCK_RL
 TEXT
 }

@@ -107,8 +107,10 @@ A duck hears its own speaker, because a real microphone on the same head does.
 
 `pet-detect` — the ~20 KB CNN that classifies head-petting from 40-band log-mel windows — runs
 against this unmodified, forking the `arecord` it always forks, reading the 16 kHz mono it always
-reads. `./microduck-twin listen` plays what an ear receives, which is the honest monitor: not a
-tap on the speaker wire but the room as that duck hears it.
+reads. What comes out of your speakers is an ear rather than a speaker wire: `up` monitors duck-a
+from the start, and `./microduck-twin listen duck-b` plays another one. It is the honest
+monitor — the room as that duck receives it, attenuated, delayed, and muffled by whatever is
+between. A duck the other side of a wall is faint on your desk too.
 
 ### The console
 
@@ -154,12 +156,15 @@ git clone https://github.com/digows/microduck-twin
 cd microduck-twin
 ./microduck-twin doctor        # what the host is missing, as the line to paste
 ./microduck-twin up            # the body, the daemons, the codec
-./microduck-twin ctl quack     # its own voice, from its own serial — audible
+./microduck-twin ctl quack     # its own voice — and you hear the room it is in
 ./microduck-twin ctl robot do roulade
 ./microduck-twin down
 ```
 
-A MuJoCo window opens and the duck stands up in it. `TWIN_VIEWER=0` for a headless run.
+A MuJoCo window opens and the duck stands up in it, and one ear is monitored on your own
+speakers from the start — so a quack is audible the way it is when you are in the room with a
+robot, rather than a command you have to hold open somewhere. `TWIN_VIEWER=0` and
+`TWIN_MONITOR=0` turn each off.
 
 The first `up` clones the two upstreams at the commits in `deps.env`, builds the daemons, makes
 the simulator's venv and fetches the official policy set. After that it takes seconds. To work

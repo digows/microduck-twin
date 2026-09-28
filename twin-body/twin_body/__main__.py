@@ -28,7 +28,9 @@ _run = body_server.run
 
 
 def run(world, headless: bool) -> None:
-    if not headless:
+    import os
+
+    if not headless and os.environ.get("TWIN_HUD", "1") != "0":
         hud.install(world, world.bodies)
     return _run(world, headless)
 

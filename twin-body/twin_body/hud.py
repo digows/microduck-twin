@@ -252,11 +252,13 @@ class Hud:
             f"{sim_time:.0f} s",
         ])
 
-        right_labels = "\n".join(["ducks", "ear at", "command"])
+        right_labels = "\n".join(["ducks", "ear height", "command", "", "depth 8x8"])
         right_values = "\n".join([
             str(len(self.bodies)),
             f"{hears[0][2]:.2f} m" if hears else "unplaced",
             f"vx {self.velocity[0]:+.2f}  vyaw {self.velocity[2]:+.2f}",
+            "",
+            "below: near is warm, dark is nothing",
         ])
 
         keys_labels = "arrows\nspace\nQ / Y\nR / G\nP"
@@ -282,7 +284,7 @@ class Hud:
         with self.world.lock:
             distance, status = body.tof.frame(self.world.data)
 
-        cell = 14
+        cell = 18
         image = np.zeros((8 * cell, 8 * cell, 3), dtype=np.uint8)
         for row in range(8):
             for col in range(8):
@@ -295,7 +297,15 @@ class Hud:
                     colour = (int(40 + 215 * near), int(70 + 80 * near), int(200 - 150 * near))
                 image[row * cell:(row + 1) * cell, col * cell:(col + 1) * cell] = colour
 
-        viewport = mujoco.MjrRect(16, 16, 8 * cell, 8 * cell)
+        # **Bottom right, out of the keys' way.** The first placement was a fixed rectangle
+        # at the bottom left, which is where `set_texts` also puts the key list — so the
+        # grid sat on top of the letters and read as a bug rather than a sensor. The
+        # viewport is read each frame rather than assumed, because a window is resizable.
+        size = 8 * cell
+        margin = 16
+        window = self.handle.viewport
+        left = max(margin, window.width - size - margin)
+        viewport = mujoco.MjrRect(left, margin, size, size)
         return [(viewport, image)]
 
 

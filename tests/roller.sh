@@ -42,6 +42,24 @@ check "the crouch is the ground pick" "roller_crouch"  "$policies"
 check "a duck on wheels does not kick" "switched off"  "$policies"
 check "and it is healthy"             "healthy"        "$health"
 
+
+# **The gap that let a broken roller ship.** This file used to stop at "the right policies
+# loaded and the daemon is healthy", and healthy is not standing: a duck flat on its face
+# with its control loop at 50 Hz is a healthy duck. What a roller bring-up has to show is a
+# duck on its wheels that goes somewhere when told to.
+echo
+echo "and it is actually on its wheels"
+# The simulator's venv where the twin found it, and the system's otherwise: this probe
+# needs nothing but sockets and the standard library.
+rl="${TWIN_MICRODUCK_RL:-$HERE/state/src/microduck_rl}"
+python="$rl/.venv/bin/python"
+[ -x "$python" ] || python=python3
+reading=$(TWIN_ROBOT_SOCKET="$HERE/state/duck-a.sock" "$python" \
+    "$HERE/tests/upright.py" 2>&1 || true)
+check "upright, not on its face" "UPRIGHT" "$reading"
+check "and it glides when told to" "MOVED" "$reading"
+printf '        %s\n' "$(printf '%s' "$reading" | tr '\n' ' ')"
+
 echo
 echo "wheels off"
 "$twin" roller off > /dev/null 2>&1

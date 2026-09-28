@@ -64,14 +64,16 @@ class TwinHandler(Handler):
         and rightly: a robot cannot be moved by asking. The body can, and this is the only
         op here that exists for a console rather than for a daemon.
         """
+        from mjlab_microduck.sim.body_server import HOME_TRUNK_Z, SPACING
+
+        # `Body.place` is what `main` uses to put a duck down in the first place: home pose,
+        # upright, still, and the torque re-applied. Doing it by hand here set the trunk to
+        # an arbitrary 0.20 m and left the joints in whatever shape the fall had left them,
+        # so a relaxed duck simply dropped the twenty centimetres again. The height comes
+        # from the body too, and `TwinBody.place` raises it by the wheels when there are any.
         with body.world.lock:
-            data = body.world.data
-            data.qpos[body.trunk + 0] = 0.0
-            data.qpos[body.trunk + 1] = 0.0
-            data.qpos[body.trunk + 2] = 0.20
-            data.qpos[body.trunk + 3:body.trunk + 7] = [1.0, 0.0, 0.0, 0.0]
-            data.qvel[body.trunk_dof:body.trunk_dof + 6] = 0.0
-        return {"placed": True}
+            body.place(None, HOME_TRUNK_Z, body.index * SPACING)
+        return {"placed": True, "trunk_z": float(body.world.data.qpos[body.trunk + 2])}
 
     def hears(self, body) -> dict:
         world = body.world

@@ -32,7 +32,7 @@ This project is the device that is missing.
 | **Battery and thermals** — they move with what the robot is doing | **works** |
 | **Ear** — the head microphone as a sensor of the simulated world | **works** |
 | **Console** — every sensor and the keys, on the window the duck is already in | **works** |
-| **Rollers** — wheels on, wheels off, from the page or the command line | **works** |
+| **Rollers** — wheels on, wheels off, and the duck stays on them | **works** |
 
 ## Why this is not the forty-first Microduck simulator
 

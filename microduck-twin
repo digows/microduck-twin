@@ -42,7 +42,17 @@ if [ "$MODE" = roller ]; then
 else
     SCENE="${TWIN_SCENE:-apartment}"
 fi
-KEYFRAME="${TWIN_KEYFRAME:-SIT}"
+# `SIT` for a duck with feet: folded on the floor, stable while it waits, and the standing
+# policy rises from it on its own. A duck on wheels gets `HOME` instead, and not because it
+# has no standing policy — though it has none — but because the scene's keyframes are the
+# *walking* robot's poses. `HOME` is the pose the policies themselves were trained around,
+# and `HOME_TRUNK_Z` plus the wheels' rise comes to 0.1385 m, which is exactly where
+# `infer_policy.py` puts a duck on castors.
+if [ "$MODE" = roller ]; then
+    KEYFRAME="${TWIN_KEYFRAME:-HOME}"
+else
+    KEYFRAME="${TWIN_KEYFRAME:-SIT}"
+fi
 CAMERAS="${TWIN_CAMERAS:-}"
 # On, because a twin you cannot watch is a log file. `TWIN_VIEWER=0` for a headless run —
 # CI, a test, or a machine with no display.
@@ -275,7 +285,14 @@ roller() {
     printf '%s\n' "$new" > "$STATE/mode"
     say "wheels ${want}: bringing the twin back up in $new mode"
     MODE=$new
-    [ "$new" = roller ] && SCENE="${TWIN_SCENE:-rollers}" || SCENE="${TWIN_SCENE:-apartment}"
+    if [ "$new" = roller ]; then
+        SCENE="${TWIN_SCENE:-rollers}"
+        # HOME, not a scene keyframe: those are the walking robot's poses.
+        KEYFRAME="${TWIN_KEYFRAME:-HOME}"
+    else
+        SCENE="${TWIN_SCENE:-apartment}"
+        KEYFRAME="${TWIN_KEYFRAME:-SIT}"
+    fi
     up
 }
 
@@ -536,7 +553,16 @@ stand() {
     i=0
     while [ "$i" -lt "$DUCKS" ]; do
         DUCK=$(duck_name "$i")
-        ctl robot init >/dev/null 2>&1 || true
+        # **No ramp on wheels.** `robot init` turns the torque on and then spends two
+        # seconds ramping to the home pose with nothing balancing — which is fine for a
+        # duck folded on the floor and fatal for one standing on castors. The log said so
+        # plainly: "ramping to home HOME_RAMP=2s", then one second later "the fall verdict
+        # changed fallen=true", and only then "the policy has the robot" — which by that
+        # point was lying on its side with no standing policy to get up with.
+        #
+        # The body already put it at the home pose with torque on, so the only thing left
+        # is to hand it over.
+        [ "$MODE" = roller ] || ctl robot init >/dev/null 2>&1 || true
         ctl robot enable >/dev/null 2>&1 || true
         i=$((i + 1))
     done
